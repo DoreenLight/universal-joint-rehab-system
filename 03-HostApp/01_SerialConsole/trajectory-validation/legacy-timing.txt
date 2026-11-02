@@ -1,0 +1,18 @@
+fixture=0 motor=1 limits=-30,30 speed=30 pause=2
+state=0 ticks=201 end=-30
+state=1 ticks=223 end=30
+state=2 ticks=201 end=30
+state=3 ticks=223 end=-30
+cycle_ticks=848 nominal_seconds=8.48
+fixture=0 motor=2 limits=-30,30 speed=30 pause=2
+state=0 ticks=201 end=-30
+state=1 ticks=223 end=30
+state=2 ticks=201 end=30
+state=3 ticks=223 end=-30
+cycle_ticks=848 nominal_seconds=8.48
+fixture=1 motor=1 limits=-12,23 speed=17 pause=0.4
+state=0 ticks=41 end=-12
+INCOMPLETE after 99999 ticks; pos=22.95 state=1
+fixture=1 motor=2 limits=-12,23 speed=17 pause=0.4
+state=0 ticks=41 end=-12
+INCOMPLETE after 99999 ticks; pos=22.95 state=1

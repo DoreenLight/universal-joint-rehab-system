@@ -1,0 +1,3 @@
+PASS: only local duration controls, snapshot loading/locking and reference timing changed.
+PASS: telemetry, feedback, recording, experiment clocks and tracker rendering functions unchanged.
+PASS: device command lines and all six other production source files unchanged.

@@ -1,0 +1,53 @@
+# macOS 系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Keil MDK 编译产物
+Debug/
+Objects/
+Listings/
+Output/
+*.o
+*.d
+*.crf
+*.dep
+*.axf
+*.map
+*.lst
+*.hex
+
+# Qt / CMake 构建目录
+build/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+*.user.*
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 临时与备份文件
+*.tmp
+*.bak
+Thumbs.db
+Desktop.ini
+*.lnk
+**/.git_backup/
+
+# 根目录与交付超大备份包（>100MB）
+minda-beigong-ziyouduwankang (2).zip
+10-Delivery/*.zip
+
+
+# 凭据防御性忽略
+.env
+.env.*
+.secrets
+*.pem
+*.key
+id_rsa*
+credentials*

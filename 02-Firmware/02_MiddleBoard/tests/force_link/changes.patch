@@ -1,0 +1,432 @@
+--- usart3.c.before
++++ usart3.c
+@@ -14,10 +14,17 @@
+ static volatile uint8_t u8Uart3WaitingResponse = 0;
+ static uint32_t u32Uart3LastPollTick = 0;
+ static uint32_t u32Uart3RequestTick = 0;
+-static uint8_t u8Uart3FrameBuffer[DF_UART3_REC_BUF_LEN];
+-static uint8_t u8Uart3SendBuffer[DF_UART3_REC_BUF_LEN];
+-static uint16_t u16Uart3FrameLen = 0;
+-static volatile uint8_t u8Uart3FrameReady = 0;
++#define UART3_QUEUE_SIZE 8U
++volatile Uart3Diagnostics g_uart3_diag;
++static uint8_t rx_stream[DF_DR304_RESPONSE_MAX_LEN];
++static uint16_t rx_used, dma_position;
++static uint8_t frame_queue[UART3_QUEUE_SIZE][DF_DR304_RESPONSE_MAX_LEN];
++static volatile uint8_t queue_head, queue_tail;
++static volatile uint8_t rx_recovery_pending;
++static uint32_t recovery_tick;
++static void Uart3ConsumeDma(void);
++static void Uart3Feed(const uint8_t *data, uint16_t length);
++static void Uart3RecoverRx(void);
+ static volatile uint8_t u8Uart3InitOk = 0;
+ static volatile uint8_t u8Uart3TxBusy = 0;
+ static volatile uint8_t u8Uart3ZeroSaveStep = 0;
+@@ -79,15 +86,19 @@
+         return;
+     }
+ 
++    rx_used = dma_position = 0U;
++    queue_head = queue_tail = 0U;
++    rx_recovery_pending = 0U;
+     if (HAL_UART_Receive_DMA(&huart3, u8Uart3RxBuffer, DF_UART3_REC_BUF_LEN) != HAL_OK)
+     {
+-        return;
++        g_uart3_diag.rx_restart_errors++;
++        rx_recovery_pending = 1U;
+     }
+ 
+     HAL_NVIC_EnableIRQ(USART3_IRQn);
+     HAL_NVIC_SetPriority(USART3_IRQn, 4, 0);
+ 
+-    HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 5, 0);
++    HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 4, 0); /* serialize RX consumers */
+     HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+     HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 5, 0);
+     HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+@@ -96,8 +107,7 @@
+     u8Uart3WaitingResponse = 0;
+     u32Uart3LastPollTick = HAL_GetTick();
+     u32Uart3RequestTick = 0;
+-    u8Uart3FrameReady = 0U;
+-    u16Uart3FrameLen = 0U;
++    recovery_tick = HAL_GetTick();
+     u8Uart3TxBusy = 0U;
+     u8Uart3ZeroSaveStep = 0U;
+     u8Uart3InitOk = 1U;
+@@ -112,11 +122,15 @@
+         return;
+     }
+ 
++    Uart3RecoverRx();
++    if (rx_recovery_pending != 0U) return;
+     u32NowTick = HAL_GetTick();
+     if (u8Uart3TxBusy != 0U)
+     {
+         if ((uint32_t)(u32NowTick - u32Uart3RequestTick) >= DF_DR304_RESPONSE_TIMEOUT_MS)
+         {
++            g_uart3_diag.tx_timeouts++;
++            (void)HAL_UART_AbortTransmit(&huart3);
+             u8Uart3TxBusy = 0U;
+             u8Uart3WaitingResponse = 0U;
+             Uart3_RS485_RX_ENABLE();
+@@ -129,6 +143,7 @@
+     {
+         if ((uint32_t)(u32NowTick - u32Uart3RequestTick) >= DF_DR304_RESPONSE_TIMEOUT_MS)
+         {
++            g_uart3_diag.response_timeouts++;
+             u8Uart3WaitingResponse = 0U;
+             u32Uart3LastPollTick = u32NowTick;
+         }
+@@ -188,37 +203,22 @@
+ 
+ void Uart3RxToUart4Task(void)
+ {
++    uint8_t frame[DF_DR304_RESPONSE_MAX_LEN];
++    uint32_t mask = __get_PRIMASK();
++    __disable_irq();
++    if (queue_head == queue_tail)
++    {
++        if (mask == 0U) __enable_irq();
++        return;
++    }
++    memcpy(frame, frame_queue[queue_tail], sizeof(frame));
++    queue_tail = (uint8_t)((queue_tail + 1U) % UART3_QUEUE_SIZE);
++    if (mask == 0U) __enable_irq();
+ #if (DF_DR304_FORWARD_TO_UART4 != 0)
+-    uint16_t u16SendLen;
+-#endif
+-    uint32_t u32Primask;
+-
+-    u32Primask = __get_PRIMASK();
+-    __disable_irq();
+-
+-    if (u8Uart3FrameReady == 0U)
+-    {
+-        if (u32Primask == 0U)
+-        {
+-            __enable_irq();
+-        }
+-        return;
+-    }
+-
+-#if (DF_DR304_FORWARD_TO_UART4 != 0)
+-    u16SendLen = u16Uart3FrameLen;
+-    memcpy(u8Uart3SendBuffer, u8Uart3FrameBuffer, u16SendLen);
+-#endif
+-    u8Uart3FrameReady = 0U;
+-    u16Uart3FrameLen = 0U;
+-
+-    if (u32Primask == 0U)
+-    {
+-        __enable_irq();
+-    }
+-
+-#if (DF_DR304_FORWARD_TO_UART4 != 0)
+-    Uart4DebugSendRxFrame(u8Uart3SendBuffer, u16SendLen);
++    if (Uart4SendFrame(frame, sizeof(frame)) == HAL_OK)
++        g_uart3_diag.forwarded_frames++;
++    else
++        g_uart3_diag.forward_errors++;
+ #endif
+ }
+ 
+@@ -234,7 +234,7 @@
+     hdma_usart3_rx.Init.MemInc = DMA_MINC_ENABLE;
+     hdma_usart3_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+     hdma_usart3_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+-    hdma_usart3_rx.Init.Mode = DMA_NORMAL;
++    hdma_usart3_rx.Init.Mode = DMA_CIRCULAR;
+     hdma_usart3_rx.Init.Priority = DMA_PRIORITY_MEDIUM;
+ 
+     if (HAL_DMA_Init(&hdma_usart3_rx) != HAL_OK)
+@@ -279,6 +279,8 @@
+         return HAL_ERROR;
+     }
+ 
++    if (u8Uart3TxBusy != 0U || rx_recovery_pending != 0U) return HAL_BUSY;
++    u32Uart3RequestTick = HAL_GetTick();
+     Uart3_RS485_TX_ENABLE();
+     memcpy(u8Uart3TxBuffer, u8Buf, u16len);
+     u8Uart3TxBusy = 1U;
+@@ -532,9 +534,102 @@
+     }
+ }
+ 
++/* Called by equal-priority USART3 and DMA RX interrupts only. Circular DMA
++ * remains armed across IDLE events; half/full IRQs prevent a full-lap ambiguity. */
++static void Uart3ConsumeDma(void)
++{
++    uint16_t pos;
++    if (rx_recovery_pending != 0U) return;
++    pos = (uint16_t)(DF_UART3_REC_BUF_LEN - __HAL_DMA_GET_COUNTER(&hdma_usart3_rx));
++    if (pos >= DF_UART3_REC_BUF_LEN) pos = 0U;
++    if (pos < dma_position)
++    {
++        Uart3Feed(&u8Uart3RxBuffer[dma_position], DF_UART3_REC_BUF_LEN - dma_position);
++        dma_position = 0U;
++    }
++    if (pos > dma_position)
++        Uart3Feed(&u8Uart3RxBuffer[dma_position], pos - dma_position);
++    dma_position = pos;
++}
++
++static void Uart3Feed(const uint8_t *data, uint16_t length)
++{
++    uint16_t i;
++    for (i = 0U; i < length; ++i)
++    {
++        g_uart3_diag.rx_bytes++;
++        rx_stream[rx_used++] = data[i];
++        while (rx_used != 0U)
++        {
++            if (rx_stream[0] == DF_DR304_MODBUS_ADDR &&
++                (rx_used < 2U || rx_stream[1] == 0x03U) &&
++                (rx_used < 3U || rx_stream[2] == DF_DR304_VALUE_BYTE_COUNT))
++            {
++                uint8_t next;
++                if (rx_used < DF_DR304_RESPONSE_MAX_LEN) break;
++                if (Uart3IsModbusResponse(rx_stream, rx_used) != 0U)
++                {
++                    g_uart3_diag.valid_frames++;
++                    g_uart3_diag.last_valid_tick = HAL_GetTick();
++                    u8Uart3WaitingResponse = 0U;
++                    u32Uart3LastPollTick = HAL_GetTick();
++                    next = (uint8_t)((queue_head + 1U) % UART3_QUEUE_SIZE);
++                    if (next == queue_tail) g_uart3_diag.queue_overflows++;
++                    else
++                    {
++                        memcpy(frame_queue[queue_head], rx_stream, rx_used);
++                        queue_head = next;
++                    }
++                    rx_used = 0U;
++                    break;
++                }
++                g_uart3_diag.crc_errors++;
++            }
++            memmove(rx_stream, rx_stream + 1, --rx_used);
++            g_uart3_diag.discarded_bytes++;
++        }
++    }
++}
++
++void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
++{
++    if (huart->Instance == USART3)
++    {
++        g_uart3_diag.uart_errors++;
++        g_uart3_diag.last_uart_error = huart->ErrorCode;
++        rx_recovery_pending = 1U;
++    }
++}
++
++/* Main-loop retry, no changes to transmitter or zero/save commands. */
++static void Uart3RecoverRx(void)
++{
++    uint32_t now = HAL_GetTick();
++    if (rx_recovery_pending == 0U || (uint32_t)(now - recovery_tick) < 20U) return;
++    recovery_tick = now;
++    HAL_NVIC_DisableIRQ(USART3_IRQn);
++    HAL_NVIC_DisableIRQ(DMA1_Channel5_IRQn);
++    if (HAL_UART_AbortReceive(&huart3) == HAL_OK)
++    {
++        rx_used = dma_position = 0U;
++        __HAL_UART_CLEAR_IDLEFLAG(&huart3);
++        if (HAL_UART_Receive_DMA(&huart3, u8Uart3RxBuffer, DF_UART3_REC_BUF_LEN) == HAL_OK)
++        {
++            rx_recovery_pending = 0U;
++            g_uart3_diag.rx_recoveries++;
++        }
++        else g_uart3_diag.rx_restart_errors++;
++    }
++    else g_uart3_diag.rx_restart_errors++;
++    HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
++    HAL_NVIC_EnableIRQ(USART3_IRQn);
++}
++
+ void DMA1_Channel5_IRQHandler(void)
+ {
++    /* HAL handles transfer errors before any bytes are accepted. */
+     HAL_DMA_IRQHandler(&hdma_usart3_rx);
++    Uart3ConsumeDma();
+ }
+ 
+ void DMA1_Channel6_IRQHandler(void)
+@@ -544,47 +639,10 @@
+ 
+ void USART3_IRQHandler(void)
+ {
+-    uint16_t u16RceLen = 0;
+-
++    HAL_UART_IRQHandler(&huart3);
+     if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_IDLE) != RESET)
+     {
+         __HAL_UART_CLEAR_IDLEFLAG(&huart3);
+-        HAL_UART_DMAStop(&huart3);
+-        u16RceLen = __HAL_DMA_GET_COUNTER(&hdma_usart3_rx);
+-        u16RceLen = DF_UART3_REC_BUF_LEN - u16RceLen;
+-        if ((u16RceLen > 0U) &&
+-            (u16RceLen <= DF_UART3_REC_BUF_LEN) &&
+-            (Uart3IsModbusResponse(u8Uart3RxBuffer, u16RceLen) != 0U))
+-        {
+-            memcpy(u8Uart3FrameBuffer, u8Uart3RxBuffer, u16RceLen);
+-            u16Uart3FrameLen = u16RceLen;
+-            u8Uart3FrameReady = 1U;
+-        }
+-        u8Uart3WaitingResponse = 0U;
+-        u32Uart3LastPollTick = HAL_GetTick();
+-        HAL_UART_Receive_DMA(&huart3, u8Uart3RxBuffer, DF_UART3_REC_BUF_LEN);
+-    }
+-
+-    if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_TC) != RESET)
+-    {
+-        u8Uart3TxBusy = 0U;
+-        Uart3_RS485_RX_ENABLE();
+-    }
+-
+-    if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_ORE) != RESET)
+-    {
+-        __HAL_UART_CLEAR_FLAG(&huart3, UART_FLAG_ORE);
+-    }
+-
+-    if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_NE) != RESET)
+-    {
+-        __HAL_UART_CLEAR_FLAG(&huart3, UART_FLAG_NE);
+-    }
+-
+-    if (__HAL_UART_GET_FLAG(&huart3, UART_FLAG_FE) != RESET)
+-    {
+-        __HAL_UART_CLEAR_FLAG(&huart3, UART_FLAG_FE);
+-    }
+-
+-    HAL_UART_IRQHandler(&huart3);
+-}
++        Uart3ConsumeDma();
++    }
++}
+--- usart3.h.before
++++ usart3.h
+@@ -20,6 +20,15 @@
+ #define DF_DR304_RESPONSE_TIMEOUT_MS     20
+ #define DF_DR304_FORWARD_TO_UART4        1
+ 
++/* RAM-only diagnostics: no text is injected into the binary UART link. */
++typedef struct {
++    uint32_t rx_bytes, valid_frames, crc_errors, discarded_bytes;
++    uint32_t queue_overflows, forwarded_frames, forward_errors;
++    uint32_t uart_errors, last_uart_error, rx_restart_errors, rx_recoveries;
++    uint32_t response_timeouts, tx_timeouts, last_valid_tick;
++} Uart3Diagnostics;
++extern volatile Uart3Diagnostics g_uart3_diag;
++
+ void Uart3Init(uint32_t u32baud);
+ void Uart3PollTask(void);
+ void Uart3RxToUart4Task(void);
+--- usart4.c.before
++++ usart4.c
+@@ -6,7 +6,7 @@
+ 
+ static void Uart4GpioInit(void);
+ static void Uart4BlockingSend(uint8_t *u8Buf, uint16_t u16len);
+-static void Uart4RegisterSend(uint8_t *u8Buf, uint16_t u16len);
++volatile Uart4Diagnostics g_uart4_diag;
+ 
+ #if 1
+ #if (__ARMCC_VERSION >= 6010050)
+@@ -41,11 +41,9 @@
+ 
+ int fputc(int ch, FILE *f)
+ {
+-    while ((UART4->ISR & USART_ISR_TC) == 0U)
+-    {
+-    }
+-    UART4->TDR = (uint8_t)ch;
+-    return ch;
++    uint8_t byte = (uint8_t)ch;
++    (void)f;
++    return Uart4SendFrame(&byte, 1U) == HAL_OK ? ch : EOF;
+ }
+ #endif
+ 
+@@ -108,39 +106,38 @@
+ 
+ static void Uart4BlockingSend(uint8_t *u8Buf, uint16_t u16len)
+ {
+-    if ((u8Buf == NULL) || (u16len == 0U))
+-    {
+-        return;
+-    }
+-
+-    if (u16len > DF_UART4_REC_BUF_LEN)
+-    {
+-        u16len = DF_UART4_REC_BUF_LEN;
+-    }
+-
+-    memcpy(u8Uart4TxBuffer, u8Buf, u16len);
+-
+-    if (HAL_UART_Transmit(&huart4, u8Uart4TxBuffer, u16len, 100U) == HAL_OK)
+-    {
+-        return;
+-    }
+-
+-    Uart4RegisterSend(u8Uart4TxBuffer, u16len);
++    (void)Uart4SendFrame(u8Buf, u16len);
+ }
+ 
+-static void Uart4RegisterSend(uint8_t *u8Buf, uint16_t u16len)
++HAL_StatusTypeDef Uart4SendFrame(const uint8_t *data, uint16_t length)
+ {
+-    uint16_t u16Index;
+-
+-    for (u16Index = 0U; u16Index < u16len; u16Index++)
++    HAL_StatusTypeDef status;
++    if (data == NULL || length == 0U || length > DF_UART4_REC_BUF_LEN)
+     {
+-        while ((UART4->ISR & USART_ISR_TXE_TXFNF) == 0U)
+-        {
+-        }
+-        UART4->TDR = u8Buf[u16Index];
++        g_uart4_diag.invalid_requests++;
++        return HAL_ERROR;
+     }
+-
+-    while ((UART4->ISR & USART_ISR_TC) == 0U)
++    /* HAL timeouts require a running tick. Never block in an ISR or with
++     * interrupts masked, including through the printf retarget above. */
++    if (__get_IPSR() != 0U || __get_PRIMASK() != 0U)
+     {
++        g_uart4_diag.send_errors++;
++        return HAL_BUSY;
+     }
++    /* Do not replay a partially transmitted frame or spin on UART flags.
++     * Existing callers run in the main loop with the HAL tick enabled. */
++    memcpy(u8Uart4TxBuffer, data, length);
++    status = HAL_UART_Transmit(&huart4, u8Uart4TxBuffer, length, 100U);
++    if (status == HAL_OK)
++    {
++        g_uart4_diag.sent_frames++;
++        g_uart4_diag.sent_bytes += length;
++    }
++    else
++    {
++        g_uart4_diag.send_errors++;
++        if (status == HAL_TIMEOUT) g_uart4_diag.timeouts++;
++        if (status != HAL_BUSY) (void)HAL_UART_AbortTransmit(&huart4);
++    }
++    return status;
+ }
+--- usart4.h.before
++++ usart4.h
+@@ -6,6 +6,12 @@
+ #define DF_UART4_BAUD_RARE   230400
+ #define DF_UART4_REC_BUF_LEN 1048
+ 
++typedef struct {
++    uint32_t sent_frames, sent_bytes, send_errors, timeouts, invalid_requests;
++} Uart4Diagnostics;
++extern volatile Uart4Diagnostics g_uart4_diag;
++HAL_StatusTypeDef Uart4SendFrame(const uint8_t *data, uint16_t length);
++
+ void Uart4Init(uint32_t u32baud);
+ void Uart4DMASendFunction(uint8_t *u8Buf, uint16_t u16len);
+ void Uart4DebugSendRxFrame(uint8_t *u8Buf, uint16_t u16len);

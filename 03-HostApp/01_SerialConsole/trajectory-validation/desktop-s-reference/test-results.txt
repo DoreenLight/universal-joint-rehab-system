@@ -1,0 +1,2 @@
+PASS S samples, range, reversal, exact requested phase times; default 80 seconds and 18.75 deg/s reference peak
+PASS 274256 checks; independent timing, frozen settings, original parser/feedback/recording; 161 synthetic telemetry frames; zero sends; no open ports

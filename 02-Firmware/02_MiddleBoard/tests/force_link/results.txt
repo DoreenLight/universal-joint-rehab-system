@@ -1,0 +1,8 @@
+PASS all split points, bytewise input, concatenated frames, exact forwarded bytes
+PASS bad CRC/noise resynchronization and explicit queue overflow accounting
+PASS circular DMA half/full/wrap/IDLE, no IDLE abort or restart
+PASS error recovery, failed abort/rearm retries and tick wrap
+PASS bounded forwarding failure/no replay, recovery on later frame, poll timeouts
+PASS 233 assertions; extracted production functions with mocked HAL
+PASS: only four allowed firmware files changed; motor/safety sources unchanged.
+LIMIT: host mocks only; no ARM build, hardware DMA timing or flashing.

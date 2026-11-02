@@ -1,0 +1,2 @@
+PASS: all baseline source hashes unchanged except main.c
+PASS: main.c bytes identical after excluding only reference include/types/reset/wrappers

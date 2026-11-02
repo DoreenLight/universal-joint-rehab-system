@@ -1,0 +1,17 @@
+[0/1] Re-running CMake...
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (1.9s)
+-- Generating done (0.9s)
+-- Build files have been written to: C:/Users/Lenovo/Desktop/universal-joint-rehab-system/03-HostApp/01_SerialConsole/trajectory-validation/desktop-s-reference/build/validation
+[1/12] Automatic MOC and UIC for target Uart_controller
+[2/12] Automatic MOC and UIC for target desktop_reference_test
+[3/12] Building CXX object application/CMakeFiles/Uart_controller.dir/main.cpp.obj
+[4/12] Building CXX object application/CMakeFiles/Uart_controller.dir/Uart_controller_autogen/mocs_compilation.cpp.obj
+[5/12] Building CXX object CMakeFiles/desktop_reference_test.dir/desktop_reference_test_autogen/mocs_compilation.cpp.obj
+[6/12] Building CXX object CMakeFiles/desktop_reference_test.dir/build/source/protocolworker.cpp.obj
+[7/12] Building CXX object application/CMakeFiles/Uart_controller.dir/protocolworker.cpp.obj
+[8/12] Building CXX object application/CMakeFiles/Uart_controller.dir/mainwindow.cpp.obj
+[9/12] Linking CXX executable Uart_controller.exe
+[10/12] Building CXX object CMakeFiles/desktop_reference_test.dir/test_desktop_reference.cpp.obj
+[11/12] Linking CXX executable desktop_reference_test.exe

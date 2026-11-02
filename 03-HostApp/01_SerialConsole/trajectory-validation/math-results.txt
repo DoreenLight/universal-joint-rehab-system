@@ -1,0 +1,1 @@
+PASS 49318 checks; 4 synthetic fixtures; NOT integrated/device-validated

@@ -1,0 +1,217 @@
+--- before/Core/Src/main.c
++++ after/Core/Src/main.c
+@@ -38,6 +38,7 @@
+ #include "proto_app.h"
+ #include "flash_store.h"
+ #include "motor_ctrl.h"
++#include "active_reference.h"
+ 
+ 
+ /* USER CODE END Includes */
+@@ -94,26 +95,11 @@
+ static rehab_ctx_t g_rehab_m1 = {0u, REHAB_IDLE, 0.0f, 0u};
+ static rehab_ctx_t g_rehab_m2 = {0u, REHAB_IDLE, 0.0f, 0u};
+ 
+-/* --- Active rehab T-wave state machine (M1) --- */
+-typedef enum {
+-    ACTV_PAUSE_1 = 0,     /* paused at limit1 */
+-    ACTV_MOVING_TO_2,     /* moving toward limit2 */
+-    ACTV_PAUSE_2,         /* paused at limit2 */
+-    ACTV_MOVING_TO_1      /* moving toward limit1 */
+-} actv_state_t;
+-
+-typedef struct {
+-    uint8_t     active;         /* 0=stopped, 1=running */
+-    uint8_t     state;          /* actv_state_t */
+-    float       pos;            /* virtual trajectory position (°) */
+-    float       vel;            /* current ramp velocity (deg/cycle) */
+-    uint16_t    pause_ticks;    /* pause countdown (100Hz ticks) */
+-} actv_rehab_t;
+-
+-static actv_rehab_t g_actv_m1 = {0u, ACTV_PAUSE_1, 0.0f, 0.0f, 0u};
++/* --- Active rehab visual reference (shared quintic generator) --- */
++static actv_rehab_t g_actv_m1 = {0};
+ static float        g_actv_traj_pos = 0.0f;   /* M1 T-wave position for telemetry */
+ 
+-static actv_rehab_t g_actv_m2 = {0u, ACTV_PAUSE_1, 0.0f, 0.0f, 0u};
++static actv_rehab_t g_actv_m2 = {0};
+ static float        g_actv_traj_pos_m2 = 0.0f; /* M2 T-wave position for telemetry */
+ static uint8_t      g_actv_m2_mode = 1u;       /* 1=flex/ext(Fy), 2=ulnar/radial(Fz) */
+ 
+@@ -329,12 +315,9 @@
+         break;
+     case PROTO_IO_ID_M1_ACTV_REHAB:
+         if (state == 1u) {
+-            g_actv_m1.active = 1u;
+-            g_actv_m1.state  = ACTV_PAUSE_1;
+-            g_actv_m1.pos    = motor1_get_actv_limit1();
+-            g_actv_m1.vel    = 0.0f;
+-            g_actv_m1.pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+-            g_actv_traj_pos  = motor1_get_actv_limit1();
++            actv_ref_reset(&g_actv_m1, motor1_get_actv_limit1(),
++                           motor1_get_actv_pause());
++            g_actv_traj_pos = g_actv_m1.pos;
+             /* Kick off control loop if not running */
+             if (my_Order_mode.start_or_stop != _start) {
+                 my_Order_mode.start_or_stop = _start;
+@@ -365,12 +348,9 @@
+             } else {
+                 motor1_set_angle(80.0f);
+             }
+-            g_actv_m2.active = 1u;
+-            g_actv_m2.state  = ACTV_PAUSE_1;
+-            g_actv_m2.pos    = motor2_get_actv_limit1();
+-            g_actv_m2.vel    = 0.0f;
+-            g_actv_m2.pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+-            g_actv_traj_pos_m2 = motor2_get_actv_limit1();
++            actv_ref_reset(&g_actv_m2, motor2_get_actv_limit1(),
++                           motor2_get_actv_pause());
++            g_actv_traj_pos_m2 = g_actv_m2.pos;
+             if (my_Order_mode.start_or_stop != _start) {
+                 my_Order_mode.start_or_stop = _start;
+                 TIM2_Start_IT();
+@@ -807,137 +787,17 @@
+     }
+ }
+ 
+-/* --- T-wave virtual trajectory tick (100Hz) --- */
++/* Visual reference only: retain original call sites and telemetry values. */
+ static void actv_twave_tick(actv_rehab_t *ctx)
+ {
+-	float limit1 = motor1_get_actv_limit1();
+-	float limit2 = motor1_get_actv_limit2();
+-	float speed  = motor1_get_actv_speed() * 0.01f;  /* deg/s -> deg/cycle */
+-	float accel  = 0.1f;  /* deg/cycle^2, same as passive rehab */
+-
+-	switch (ctx->state)
+-	{
+-	case ACTV_PAUSE_1:
+-		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+-		ctx->state = ACTV_MOVING_TO_2;
+-		ctx->vel   = 0.0f;
+-		break;
+-
+-	case ACTV_MOVING_TO_2:
+-		{
+-			float error = limit2 - ctx->pos;
+-			if (fabsf(error) < 0.01f) {
+-				ctx->pos = limit2;
+-				ctx->vel = 0.0f;
+-				ctx->state = ACTV_PAUSE_2;
+-				ctx->pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+-			} else {
+-				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+-				float dist  = fabsf(error);
+-				float v_max = speed;
+-				float v_decel = sqrtf(2.0f * accel * dist);
+-				if (v_decel < v_max) v_max = v_decel;
+-				if (v_max < 0.01f)   v_max = 0.01f;
+-				ctx->vel += accel * dir;
+-				if (ctx->vel >  v_max) ctx->vel =  v_max;
+-				if (ctx->vel < -v_max) ctx->vel = -v_max;
+-				ctx->pos += ctx->vel;
+-				if (fabsf(ctx->pos - limit2) < 0.005f) ctx->pos = limit2;
+-			}
+-		}
+-		break;
+-
+-	case ACTV_PAUSE_2:
+-		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+-		ctx->state = ACTV_MOVING_TO_1;
+-		ctx->vel   = 0.0f;
+-		break;
+-
+-	case ACTV_MOVING_TO_1:
+-		{
+-			float error = limit1 - ctx->pos;
+-			if (fabsf(error) < 0.01f) {
+-				ctx->pos = limit1;
+-				ctx->vel = 0.0f;
+-				ctx->state = ACTV_PAUSE_1;
+-				ctx->pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+-			} else {
+-				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+-				float dist  = fabsf(error);
+-				float v_max = speed;
+-				float v_decel = sqrtf(2.0f * accel * dist);
+-				if (v_decel < v_max) v_max = v_decel;
+-				if (v_max < 0.01f)   v_max = 0.01f;
+-				ctx->vel += accel * dir;
+-				if (ctx->vel >  v_max) ctx->vel =  v_max;
+-				if (ctx->vel < -v_max) ctx->vel = -v_max;
+-				ctx->pos += ctx->vel;
+-				if (fabsf(ctx->pos - limit1) < 0.005f) ctx->pos = limit1;
+-			}
+-		}
+-		break;
+-	}
+-}
+-
+-/* --- M2 T-wave virtual trajectory tick (100Hz) --- */
++    actv_ref_tick(ctx, motor1_get_actv_limit1(), motor1_get_actv_limit2(),
++                  motor1_get_actv_speed(), motor1_get_actv_pause());
++}
++
+ static void actv_twave_tick_m2(actv_rehab_t *ctx)
+ {
+-	float limit1 = motor2_get_actv_limit1();
+-	float limit2 = motor2_get_actv_limit2();
+-	float speed  = motor2_get_actv_speed() * 0.01f;
+-	float accel  = 0.1f;
+-
+-	switch (ctx->state)
+-	{
+-	case ACTV_PAUSE_1:
+-		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+-		ctx->state = ACTV_MOVING_TO_2;
+-		ctx->vel   = 0.0f;
+-		break;
+-	case ACTV_MOVING_TO_2:
+-		{
+-			float error = limit2 - ctx->pos;
+-			if (fabsf(error) < 0.01f) {
+-				ctx->pos = limit2; ctx->vel = 0.0f;
+-				ctx->state = ACTV_PAUSE_2;
+-				ctx->pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+-			} else {
+-				float dir = (error > 0.0f) ? 1.0f : -1.0f;
+-				float v_max = (speed < sqrtf(2.0f*accel*fabsf(error))) ? speed : sqrtf(2.0f*accel*fabsf(error));
+-				if (v_max < 0.01f) v_max = 0.01f;
+-				ctx->vel += accel * dir;
+-				if (ctx->vel > v_max) ctx->vel = v_max;
+-				if (ctx->vel < -v_max) ctx->vel = -v_max;
+-				ctx->pos += ctx->vel;
+-				if (fabsf(ctx->pos - limit2) < 0.005f) ctx->pos = limit2;
+-			}
+-		}
+-		break;
+-	case ACTV_PAUSE_2:
+-		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+-		ctx->state = ACTV_MOVING_TO_1;
+-		ctx->vel   = 0.0f;
+-		break;
+-	case ACTV_MOVING_TO_1:
+-		{
+-			float error = limit1 - ctx->pos;
+-			if (fabsf(error) < 0.01f) {
+-				ctx->pos = limit1; ctx->vel = 0.0f;
+-				ctx->state = ACTV_PAUSE_1;
+-				ctx->pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+-			} else {
+-				float dir = (error > 0.0f) ? 1.0f : -1.0f;
+-				float v_max = (speed < sqrtf(2.0f*accel*fabsf(error))) ? speed : sqrtf(2.0f*accel*fabsf(error));
+-				if (v_max < 0.01f) v_max = 0.01f;
+-				ctx->vel += accel * dir;
+-				if (ctx->vel > v_max) ctx->vel = v_max;
+-				if (ctx->vel < -v_max) ctx->vel = -v_max;
+-				ctx->pos += ctx->vel;
+-				if (fabsf(ctx->pos - limit1) < 0.005f) ctx->pos = limit1;
+-			}
+-		}
+-		break;
+-	}
++    actv_ref_tick(ctx, motor2_get_actv_limit1(), motor2_get_actv_limit2(),
++                  motor2_get_actv_speed(), motor2_get_actv_pause());
+ }
+ 
+ void Order_Creat_process(void)

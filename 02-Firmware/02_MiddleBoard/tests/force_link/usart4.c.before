@@ -1,0 +1,146 @@
+#include "main.h"
+
+uint8_t u8Uart4TxBuffer[DF_UART4_REC_BUF_LEN];
+
+UART_HandleTypeDef huart4;
+
+static void Uart4GpioInit(void);
+static void Uart4BlockingSend(uint8_t *u8Buf, uint16_t u16len);
+static void Uart4RegisterSend(uint8_t *u8Buf, uint16_t u16len);
+
+#if 1
+#if (__ARMCC_VERSION >= 6010050)
+__asm(".global __use_no_semihosting\n\t");
+__asm(".global __ARM_use_no_argv \n\t");
+#else
+#pragma import(__use_no_semihosting)
+
+struct __FILE
+{
+    int handle;
+};
+#endif
+
+int _ttywrch(int ch)
+{
+    ch = ch;
+    return ch;
+}
+
+void _sys_exit(int x)
+{
+    x = x;
+}
+
+char *_sys_command_string(char *cmd, int len)
+{
+    return NULL;
+}
+
+FILE __stdout;
+
+int fputc(int ch, FILE *f)
+{
+    while ((UART4->ISR & USART_ISR_TC) == 0U)
+    {
+    }
+    UART4->TDR = (uint8_t)ch;
+    return ch;
+}
+#endif
+
+void Uart4Init(uint32_t u32baud)
+{
+    huart4.Instance = UART4;
+
+    HAL_NVIC_DisableIRQ(UART4_IRQn);
+    HAL_UART_DeInit(&huart4);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_10 | GPIO_PIN_11);
+
+    Uart4GpioInit();
+
+    huart4.Init.BaudRate = u32baud;
+    huart4.Init.WordLength = UART_WORDLENGTH_8B;
+    huart4.Init.StopBits = UART_STOPBITS_1;
+    huart4.Init.Parity = UART_PARITY_NONE;
+    huart4.Init.Mode = UART_MODE_TX_RX;
+    huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+    huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+    huart4.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+    huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+
+    if (HAL_UART_Init(&huart4) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+static void Uart4GpioInit(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_UART4;
+    PeriphClkInit.Uart4ClockSelection = RCC_UART4CLKSOURCE_PCLK1;
+    (void)HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
+
+    __HAL_RCC_UART4_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = GPIO_PIN_10 | GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF5_UART4;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+}
+
+void Uart4DMASendFunction(uint8_t *u8Buf, uint16_t u16len)
+{
+    Uart4BlockingSend(u8Buf, u16len);
+}
+
+void Uart4DebugSendRxFrame(uint8_t *u8Buf, uint16_t u16len)
+{
+    Uart4BlockingSend(u8Buf, u16len);
+}
+
+static void Uart4BlockingSend(uint8_t *u8Buf, uint16_t u16len)
+{
+    if ((u8Buf == NULL) || (u16len == 0U))
+    {
+        return;
+    }
+
+    if (u16len > DF_UART4_REC_BUF_LEN)
+    {
+        u16len = DF_UART4_REC_BUF_LEN;
+    }
+
+    memcpy(u8Uart4TxBuffer, u8Buf, u16len);
+
+    if (HAL_UART_Transmit(&huart4, u8Uart4TxBuffer, u16len, 100U) == HAL_OK)
+    {
+        return;
+    }
+
+    Uart4RegisterSend(u8Uart4TxBuffer, u16len);
+}
+
+static void Uart4RegisterSend(uint8_t *u8Buf, uint16_t u16len)
+{
+    uint16_t u16Index;
+
+    for (u16Index = 0U; u16Index < u16len; u16Index++)
+    {
+        while ((UART4->ISR & USART_ISR_TXE_TXFNF) == 0U)
+        {
+        }
+        UART4->TDR = u8Buf[u16Index];
+    }
+
+    while ((UART4->ISR & USART_ISR_TC) == 0U)
+    {
+    }
+}

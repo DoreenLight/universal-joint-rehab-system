@@ -1,0 +1,8 @@
+{
+  "app/active_reference.h": "6f0db39da53324da11e61ebac5f75eb7d9181340d701c7ccc89f5010d02b8f8f",
+  "Core/Src/main.c": "562d73f16659a2ab725791bab57e575214d8170eb7174ea31825f2b939c02f3a",
+  "tests/active_reference/test_reference.c": "02ea233bc67ced0c7d97eb169c2d82375fb5df4cabc404decc08d53c12cd0aa5",
+  "tests/active_reference/qt/test_telemetry.cpp": "18569d0a0256f7ea34266b35b5d027e89bcdce2046e99c9fa1fc2c7affd08254",
+  "tests/active_reference/run.ps1": "fc48d1b0c95f800c1ec7ec472e0497add7cbd7c4e1eb41dd3054330c1366d42a",
+  "tests/active_reference/REPORT.zh-CN.txt": "21d8273a255be2e48b65f20693691ef03553989549625d7f3ea899fd8d557000"
+}

@@ -1,0 +1,36 @@
+/******************************************************************************
+    File: uart3.h
+    Version: v1.0
+******************************************************************************/
+#ifndef _USART3_H
+#define _USART3_H
+#include "main.h"
+
+#define DF_UART3_BAUD_RARE   115200
+#define DF_UART3_REC_BUF_LEN 1048
+
+#define DF_DR304_MODBUS_ADDR             0x01
+#define DF_DR304_VALUE_REG_ADDR          0x0A00
+#define DF_DR304_VALUE_REG_NUM           12
+#define DF_DR304_VALUE_BYTE_COUNT        (DF_DR304_VALUE_REG_NUM * 2U)
+#define DF_DR304_RESPONSE_MAX_LEN        (5U + DF_DR304_VALUE_BYTE_COUNT)
+#define DF_DR304_SAMPLE_RATE_REG_ADDR    0x061A
+#define DF_DR304_SAVE_CMD_REG_ADDR       0x0A20
+#define DF_DR304_POLL_INTERVAL_MS        20
+#define DF_DR304_RESPONSE_TIMEOUT_MS     20
+#define DF_DR304_FORWARD_TO_UART4        1
+
+void Uart3Init(uint32_t u32baud);
+void Uart3PollTask(void);
+void Uart3RxToUart4Task(void);
+void Uart3DMASendFunction(uint8_t *u8Buf, uint16_t u16len);
+HAL_StatusTypeDef Uart3RS485SendFrame(const uint8_t *u8Buf, uint16_t u16len);
+HAL_StatusTypeDef Uart3ModbusReadHoldingRegisters(uint8_t u8Addr, uint16_t u16RegAddr, uint16_t u16RegNum);
+HAL_StatusTypeDef Uart3ModbusWriteSingleRegister(uint8_t u8Addr, uint16_t u16RegAddr, uint16_t u16Value);
+HAL_StatusTypeDef Uart3ModbusWriteMultipleRegisters(uint8_t u8Addr, uint16_t u16RegAddr, const uint16_t *u16Values, uint16_t u16RegNum);
+HAL_StatusTypeDef Uart3DR304SetSampleRate(uint8_t u8RateCode);
+HAL_StatusTypeDef Uart3DR304ZeroAll(void);
+HAL_StatusTypeDef Uart3DR304SaveParameters(void);
+HAL_StatusTypeDef Uart3DR304RequestZeroAllAndSave(void);
+
+#endif

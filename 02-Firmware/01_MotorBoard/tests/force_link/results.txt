@@ -1,0 +1,10 @@
+[DR304] zero set: Fx=1.00 Fy=2.00 Fz=3.00 Mx=4.00 My=5.00 Mz=6.00
+
+PASS: valid nonzero sample -> software zero -> 1000 reads without new frames stay zero
+PASS: bad CRC keeps old zeroed sample (no new valid force frame)
+PASS: next valid changed frame restores changed force; zero does not latch future values to zero
+PASS: middle validator rejects split or concatenated frames per IDLE chunk
+PASS: write ACK rejected; read exception accepted by middle but produces no motor force update
+PASS: current Qt zero is NOT the middle board legacy sensor-zero command
+PASS: mocked successful sends, no replies: zero state clears and polling resumes (writes=2 reads=3)
+PASS 1019 assertions; host extraction only, no MCU/DMA timing or hardware validation

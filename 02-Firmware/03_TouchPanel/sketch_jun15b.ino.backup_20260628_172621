@@ -1,0 +1,249 @@
+#include <Arduino.h>
+#include <math.h>
+#include <esp_display_panel.hpp>
+#include <lvgl.h>
+#include "lvgl_v8_port.h"
+#include "ui.h"
+
+using namespace esp_panel::drivers;
+using namespace esp_panel::board;
+
+// Waveshare ESP32-S3-Touch-LCD-4.3 RS485 example uses Serial1 RX15/TX16.
+#ifndef RS485_RX_PIN
+#define RS485_RX_PIN 15
+#endif
+
+#ifndef RS485_TX_PIN
+#define RS485_TX_PIN 16
+#endif
+
+#ifndef RS485_DE_RE_PIN
+#define RS485_DE_RE_PIN -1
+#endif
+
+#ifndef RS485_BAUD
+#define RS485_BAUD 115200
+#endif
+
+#ifndef RS485_SERIAL
+#define RS485_SERIAL Serial1
+#endif
+
+enum MotorCommand : uint8_t {
+  CMD_ANGLE_START = 0x10,
+  CMD_HORIZON_SEND = 0x20,
+  CMD_HORIZON_RESET_ZERO = 0x21,
+  CMD_HORIZON_START = 0x22,
+};
+
+struct MotorParams {
+  int32_t angle;
+  int32_t velocity;
+  int32_t current;
+  int32_t kp;
+  int32_t ki;
+};
+
+static uint8_t rs485Sequence = 0;
+static Board *displayBoard = nullptr;
+
+static int32_t scaledTextareaValue(lv_obj_t *textarea) {
+  const char *text = lv_textarea_get_text(textarea);
+  return (int32_t)lroundf(String(text).toFloat() * 1000.0f);
+}
+
+static MotorParams readAngleParams() {
+  MotorParams params;
+  params.angle = scaledTextareaValue(ui_TextArea5);
+  params.velocity = scaledTextareaValue(ui_TextArea4);
+  params.current = scaledTextareaValue(ui_TextArea3);
+  params.kp = scaledTextareaValue(ui_TextArea2);
+  params.ki = scaledTextareaValue(ui_TextArea1);
+  return params;
+}
+
+static MotorParams readHorizonParams() {
+  MotorParams params;
+  params.angle = scaledTextareaValue(ui_TextArea10);
+  params.velocity = scaledTextareaValue(ui_TextArea9);
+  params.current = scaledTextareaValue(ui_TextArea6);
+  params.kp = scaledTextareaValue(ui_TextArea7);
+  params.ki = scaledTextareaValue(ui_TextArea8);
+  return params;
+}
+
+static uint16_t crc16Modbus(const uint8_t *data, size_t length) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return crc;
+}
+
+static void appendInt32LE(uint8_t *buffer, size_t &index, int32_t value) {
+  buffer[index++] = (uint8_t)(value & 0xFF);
+  buffer[index++] = (uint8_t)((value >> 8) & 0xFF);
+  buffer[index++] = (uint8_t)((value >> 16) & 0xFF);
+  buffer[index++] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static void rs485SendFrame(uint8_t command, uint8_t motorId, const uint8_t *payload, uint8_t payloadLength) {
+  uint8_t frame[32];
+  size_t index = 0;
+
+  frame[index++] = 0xA5;
+  frame[index++] = 0x5A;
+  frame[index++] = 0x01;
+  frame[index++] = command;
+  frame[index++] = motorId;
+  frame[index++] = rs485Sequence++;
+  frame[index++] = payloadLength;
+
+  for (uint8_t i = 0; i < payloadLength; i++) {
+    frame[index++] = payload[i];
+  }
+
+  const uint16_t crc = crc16Modbus(frame, index);
+  frame[index++] = (uint8_t)(crc & 0xFF);
+  frame[index++] = (uint8_t)((crc >> 8) & 0xFF);
+
+#if RS485_DE_RE_PIN >= 0
+  digitalWrite(RS485_DE_RE_PIN, HIGH);
+  delayMicroseconds(20);
+  RS485_SERIAL.write(frame, index);
+  RS485_SERIAL.flush();
+  delayMicroseconds(20);
+  digitalWrite(RS485_DE_RE_PIN, LOW);
+#else
+  RS485_SERIAL.write(frame, index);
+  RS485_SERIAL.flush();
+#endif
+}
+
+static void rs485SendParams(uint8_t command, uint8_t motorId, const MotorParams &params) {
+  uint8_t payload[20];
+  size_t index = 0;
+
+  appendInt32LE(payload, index, params.angle);
+  appendInt32LE(payload, index, params.velocity);
+  appendInt32LE(payload, index, params.current);
+  appendInt32LE(payload, index, params.kp);
+  appendInt32LE(payload, index, params.ki);
+
+  rs485SendFrame(command, motorId, payload, (uint8_t)index);
+}
+
+static void rs485SendCommand(uint8_t command, uint8_t motorId) {
+  rs485SendFrame(command, motorId, nullptr, 0);
+}
+
+static void buttonEventCb(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+    return;
+  }
+
+  const uint8_t command = (uint8_t)(uintptr_t)lv_event_get_user_data(event);
+
+  switch (command) {
+    case CMD_ANGLE_START:
+      rs485SendParams(CMD_ANGLE_START, 1, readAngleParams());
+      break;
+    case CMD_HORIZON_SEND:
+      rs485SendParams(CMD_HORIZON_SEND, 2, readHorizonParams());
+      break;
+    case CMD_HORIZON_RESET_ZERO:
+      rs485SendCommand(CMD_HORIZON_RESET_ZERO, 2);
+      break;
+    case CMD_HORIZON_START:
+      rs485SendParams(CMD_HORIZON_START, 2, readHorizonParams());
+      break;
+  }
+}
+
+static void textareaEventCb(lv_event_t *event) {
+  const lv_event_code_t code = lv_event_get_code(event);
+
+  if (code == LV_EVENT_FOCUSED || code == LV_EVENT_CLICKED) {
+    lv_obj_t *textarea = lv_event_get_target(event);
+    lv_keyboard_set_textarea(ui_Keyboard1, textarea);
+    lv_obj_clear_flag(ui_Keyboard1, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void keyboardEventCb(lv_event_t *event) {
+  const lv_event_code_t code = lv_event_get_code(event);
+
+  if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+    lv_keyboard_set_textarea(ui_Keyboard1, nullptr);
+    lv_obj_add_flag(ui_Keyboard1, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void registerUiEvents() {
+  lv_obj_add_event_cb(ui_DIANJI1Qiting, buttonEventCb, LV_EVENT_CLICKED, (void *)(uintptr_t)CMD_ANGLE_START);
+  lv_obj_add_event_cb(ui_Button4, buttonEventCb, LV_EVENT_CLICKED, (void *)(uintptr_t)CMD_HORIZON_SEND);
+  lv_obj_add_event_cb(ui_Button6, buttonEventCb, LV_EVENT_CLICKED, (void *)(uintptr_t)CMD_HORIZON_RESET_ZERO);
+  lv_obj_add_event_cb(ui_Button8, buttonEventCb, LV_EVENT_CLICKED, (void *)(uintptr_t)CMD_HORIZON_START);
+
+  lv_obj_t *textareas[] = {
+    ui_TextArea1,
+    ui_TextArea2,
+    ui_TextArea3,
+    ui_TextArea4,
+    ui_TextArea5,
+    ui_TextArea6,
+    ui_TextArea7,
+    ui_TextArea8,
+    ui_TextArea9,
+    ui_TextArea10,
+  };
+
+  for (lv_obj_t *textarea : textareas) {
+    lv_obj_add_event_cb(textarea, textareaEventCb, LV_EVENT_ALL, nullptr);
+    lv_textarea_set_one_line(textarea, true);
+  }
+
+  lv_obj_add_event_cb(ui_Keyboard1, keyboardEventCb, LV_EVENT_ALL, nullptr);
+  lv_obj_add_flag(ui_Keyboard1, LV_OBJ_FLAG_HIDDEN);
+}
+
+void setup() {
+#if RS485_DE_RE_PIN >= 0
+  pinMode(RS485_DE_RE_PIN, OUTPUT);
+  digitalWrite(RS485_DE_RE_PIN, LOW);
+#endif
+  RS485_SERIAL.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
+  Serial.begin(115200);
+
+  displayBoard = new Board();
+  displayBoard->init();
+
+#if LVGL_PORT_AVOID_TEARING_MODE
+  auto lcd = displayBoard->getLCD();
+  lcd->configFrameBufferNumber(LVGL_PORT_DISP_BUFFER_NUM);
+#if ESP_PANEL_DRIVERS_BUS_ENABLE_RGB && CONFIG_IDF_TARGET_ESP32S3
+  auto lcd_bus = lcd->getBus();
+  if (lcd_bus->getBasicAttributes().type == ESP_PANEL_BUS_TYPE_RGB) {
+    static_cast<BusRGB *>(lcd_bus)->configRGB_BounceBufferSize(lcd->getFrameWidth() * 10);
+  }
+#endif
+#endif
+  assert(displayBoard->begin());
+  assert(lvgl_port_init(displayBoard->getLCD(), displayBoard->getTouch()));
+
+  lvgl_port_lock(-1);
+  ui_init();
+  registerUiEvents();
+  lvgl_port_unlock();
+}
+
+void loop() {
+  delay(1000);
+}

@@ -1,0 +1,45 @@
+{
+  "status": "PASS",
+  "relocatedPath": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Uart_controller.exe",
+  "systemOnlyPath": true,
+  "bundledQtModules": [
+    {
+      "ModuleName": "Qt6SerialPort.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6SerialPort.dll"
+    },
+    {
+      "ModuleName": "Qt6Charts.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6Charts.dll"
+    },
+    {
+      "ModuleName": "Qt6Core.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6Core.dll"
+    },
+    {
+      "ModuleName": "Qt6Gui.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6Gui.dll"
+    },
+    {
+      "ModuleName": "Qt6Widgets.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6Widgets.dll"
+    },
+    {
+      "ModuleName": "Qt6OpenGL.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6OpenGL.dll"
+    },
+    {
+      "ModuleName": "Qt6OpenGLWidgets.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6OpenGLWidgets.dll"
+    },
+    {
+      "ModuleName": "qwindows.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\platforms\\qwindows.dll"
+    },
+    {
+      "ModuleName": "Qt6Svg.dll",
+      "FileName": "C:\\Users\\Lenovo\\Desktop\\universal-joint-rehab-system\\10-Delivery\\work_original_20261026\\relocated\\原目录结构 测试\\universal-joint-rehab-system\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Qt6Svg.dll"
+    }
+  ],
+  "windowTitle": "",
+  "flashed": false
+}

@@ -1,0 +1,1232 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "can.h"
+#include "dma.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <rs00_motor.h>
+#include "mpu6050.h"
+#include "i2c.h"
+#include "proto_transport.h"
+#include "proto_app.h"
+#include "flash_store.h"
+#include "motor_ctrl.h"
+
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+#define MAX_HOME_TRAVEL   45.0f
+#define HOME_ANGLE_RAW  0.0f
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+#define ENABLE_USART1_FLOAT_TEST 0
+
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+/* USER CODE BEGIN PV */
+
+MIT_StateTypeDef mit_state;
+uint32_t g_100ms_counter = 0;  // 100ms鎵ц涓€娆＄殑璁℃暟鍣?
+uint8_t g_rs00_mode = 5;
+volatile uint8_t Chilun_arrive_flag = 0;
+volatile uint8_t g_homing_done = 0;     // 鍥為浂瀹屾垚鏍囧織
+float g_home_offset = 0.0f;             // 闆剁偣瀵瑰簲鐨勭疮璁¤搴︼紙鍗宠Е鍙戠灛闂寸殑 g_total_angle_1锛?
+static uint8_t g_mpu6050_ready = 0U;
+uint8_t g_m2_traj_mode = 0u;  /* Motor2: 0=position, 1=velocity */
+float   g_m2_traj_deg  = 0.0f;  /* Motor2 planned position (deg) */
+float   g_m2_traj_vel  = 0.0f;  /* Motor2 planned velocity (deg/cycle) */
+
+/* --- Rehab passive control state machine --- */
+typedef enum {
+    REHAB_IDLE = 0,
+    REHAB_FORWARD,     /* moving toward max */
+    REHAB_BACKWARD,    /* moving toward min */
+    REHAB_RETURN       /* returning to zero */
+} rehab_state_t;
+
+typedef struct {
+    uint8_t  active;       /* 0=stopped, 1=running */
+    uint8_t  state;        /* rehab_state_t */
+    float    target;       /* current target angle (°) */
+    uint16_t half_cycles;  /* half-cycles completed */
+} rehab_ctx_t;
+
+static rehab_ctx_t g_rehab_m1 = {0u, REHAB_IDLE, 0.0f, 0u};
+static rehab_ctx_t g_rehab_m2 = {0u, REHAB_IDLE, 0.0f, 0u};
+
+/* --- Active rehab T-wave state machine (M1) --- */
+typedef enum {
+    ACTV_PAUSE_1 = 0,     /* paused at limit1 */
+    ACTV_MOVING_TO_2,     /* moving toward limit2 */
+    ACTV_PAUSE_2,         /* paused at limit2 */
+    ACTV_MOVING_TO_1      /* moving toward limit1 */
+} actv_state_t;
+
+typedef struct {
+    uint8_t     active;         /* 0=stopped, 1=running */
+    uint8_t     state;          /* actv_state_t */
+    float       pos;            /* virtual trajectory position (°) */
+    float       vel;            /* current ramp velocity (deg/cycle) */
+    uint16_t    pause_ticks;    /* pause countdown (100Hz ticks) */
+} actv_rehab_t;
+
+static actv_rehab_t g_actv_m1 = {0u, ACTV_PAUSE_1, 0.0f, 0.0f, 0u};
+static float        g_actv_traj_pos = 0.0f;   /* M1 T-wave position for telemetry */
+
+static actv_rehab_t g_actv_m2 = {0u, ACTV_PAUSE_1, 0.0f, 0.0f, 0u};
+static float        g_actv_traj_pos_m2 = 0.0f; /* M2 T-wave position for telemetry */
+static uint8_t      g_actv_m2_mode = 1u;       /* 1=flex/ext(Fy), 2=ulnar/radial(Fz) */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+
+void Command_Process(void);
+void control_process(void);
+
+void AD_Caiyang_process(void);
+void Order_Creat_process(void);
+void Signal_UPdata_Process(void)
+{
+	static uint32_t send_counter = 0U;
+	static const uint8_t telem_ids[18] = {
+		PROTO_FLOAT_ID_MOTOR1_ANGLE,   /* [0] PID input (trajectory setpoint) */
+		PROTO_FLOAT_ID_MOTOR1_SPEED,   /* [1] feedback (roll) */
+		PROTO_FLOAT_ID_MOTOR1_CURRENT, /* [2] PID output */
+		PROTO_FLOAT_ID_MOTOR1_KP,      /* [3] Kp */
+		PROTO_FLOAT_ID_MOTOR1_KI,      /* [4] Ki */
+		PROTO_FLOAT_ID_MOTOR2_ANGLE,   /* [5] planned position (°) */
+		PROTO_FLOAT_ID_MOTOR2_SPEED,   /* [6] actual position (°) */
+		PROTO_FLOAT_ID_MOTOR2_TORQUE,  /* [7] planned velocity (°/s) */
+		PROTO_FLOAT_ID_MOTOR2_KP,      /* [8] actual velocity (°/s) */
+		PROTO_FLOAT_ID_MOTOR2_KD,      /* [9] torque (N*m) */
+		PROTO_FLOAT_ID_FORCE_FX,       /* [10] DR304 Fx (N) */
+		PROTO_FLOAT_ID_FORCE_FY,       /* [11] DR304 Fy (N) */
+		PROTO_FLOAT_ID_FORCE_FZ,       /* [12] DR304 Fz (N) */
+		PROTO_FLOAT_ID_FORCE_MX,       /* [13] DR304 Mx (N*m) */
+		PROTO_FLOAT_ID_FORCE_MY,       /* [14] DR304 My (N*m) */
+		PROTO_FLOAT_ID_FORCE_MZ,       /* [15] DR304 Mz (N*m) */
+		PROTO_FLOAT_ID_M1_ACTV_SPEED,  /* [16] M1 T-wave (°) */
+		PROTO_FLOAT_ID_M2_ACTV_SPEED,  /* [17] M2 T-wave (°) */
+	};
+	float telem_vals[18];
+	float ft_vals[6];
+
+	/* Throttle to ~20Hz (every 5 control cycles) */
+	send_counter++;
+	if (send_counter < 5U) return;
+	send_counter = 0U;
+
+	/* Motor1 data */
+	telem_vals[0] = Control_P_PID.In_val;        /* PID setpoint (trajectory) */
+	telem_vals[1] = roll;                         /* PID feedback (IMU roll) */
+	telem_vals[2] = Control_P_PID.u_out;          /* PID output */
+	telem_vals[3] = my_Order_mode.motor1_kp;      /* Kp */
+	telem_vals[4] = my_Order_mode.motor1_ki;      /* Ki */
+
+	/* Motor2: planned=target, actual=CAN feedback */
+	telem_vals[5] = g_m2_traj_deg;                         /* planned position (°) */
+	telem_vals[6] = motor_feedback.position * 57.29578f;   /* actual position (rad→°) */
+	telem_vals[7] = g_m2_traj_vel * 100.0f;                /* planned velocity (deg/cycle→°/s) */
+	telem_vals[8] = motor_feedback.speed * 57.29578f;      /* actual velocity (rad/s→°/s) */
+	telem_vals[9] = motor_feedback.torque;                 /* torque (N·m) */
+
+	/* Force sensor: DR304 via UART2 Modbus */
+	USART2_DR304GetLatestValues(ft_vals);
+	telem_vals[10] = ft_vals[0];
+	telem_vals[11] = ft_vals[1];
+	telem_vals[12] = ft_vals[2];
+	telem_vals[13] = ft_vals[3];
+	telem_vals[14] = ft_vals[4];
+	telem_vals[15] = ft_vals[5];
+
+	/* T-wave virtual trajectory */
+	telem_vals[16] = g_actv_traj_pos;
+	telem_vals[17] = g_actv_traj_pos_m2;
+
+	(void)proto_app_send_telemetry(18U, telem_ids, telem_vals);
+}
+void Motor1_dingdian_control_process(void);
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+
+/* --- UART3 float dispatch → motor_ctrl --- */
+static void app_float_callback(uint8_t float_id, float value)
+{
+    switch (float_id)
+    {
+    case PROTO_FLOAT_ID_MOTOR1_ANGLE:        motor1_set_angle(value);        break;
+    case PROTO_FLOAT_ID_MOTOR1_SPEED:        motor1_set_speed(value);        break;
+    case PROTO_FLOAT_ID_MOTOR1_CURRENT:      motor1_set_current(value);      break;
+    case PROTO_FLOAT_ID_MOTOR1_KP:           motor1_set_kp(value);           break;
+    case PROTO_FLOAT_ID_MOTOR1_KI:           motor1_set_ki(value);           break;
+    case PROTO_FLOAT_ID_MOTOR1_PWM:          motor1_set_pwm_duty(value);      break;
+    case PROTO_FLOAT_ID_MOTOR1_MAX_SPEED:    motor1_set_max_speed(value);     break;
+    case PROTO_FLOAT_ID_MOTOR1_REHAB_MIN:   motor1_set_rehab_min(value);     break;
+    case PROTO_FLOAT_ID_MOTOR1_REHAB_MAX:   motor1_set_rehab_max(value);     break;
+    case PROTO_FLOAT_ID_MOTOR1_REHAB_CYCLES:motor1_set_rehab_cycles(value);  break;
+    case PROTO_FLOAT_ID_M1_ACTV_SPEED:       motor1_set_actv_speed(value);    break;
+    case PROTO_FLOAT_ID_M1_ACTV_LIMIT1:      motor1_set_actv_limit1(value);   break;
+    case PROTO_FLOAT_ID_M1_ACTV_LIMIT2:      motor1_set_actv_limit2(value);   break;
+    case PROTO_FLOAT_ID_M1_ACTV_PAUSE:       motor1_set_actv_pause(value);    break;
+    case PROTO_FLOAT_ID_M1_ACTV_TMAX:        motor1_set_actv_tmax(value);     break;
+    case PROTO_FLOAT_ID_M1_ACTV_STIFF:       motor1_set_actv_stiffness(value);break;
+    case PROTO_FLOAT_ID_MOTOR2_ANGLE:        motor2_set_position(value);      break;
+    case PROTO_FLOAT_ID_MOTOR2_SPEED:        motor2_set_velocity(value);     break;
+    case PROTO_FLOAT_ID_MOTOR2_TORQUE:       motor2_set_torque(value);       break;
+    case PROTO_FLOAT_ID_MOTOR2_KP:           motor2_set_kp(value);           break;
+    case PROTO_FLOAT_ID_MOTOR2_KD:           motor2_set_kd(value);           break;
+    case PROTO_FLOAT_ID_MOTOR2_MAX_SPEED:    motor2_set_max_speed(value);     break;
+    case PROTO_FLOAT_ID_MOTOR2_CURRENT_LIMIT:motor2_set_current_limit(value);break;
+    case PROTO_FLOAT_ID_MOTOR2_REHAB_MIN:   motor2_set_rehab_min(value);     break;
+    case PROTO_FLOAT_ID_MOTOR2_REHAB_MAX:   motor2_set_rehab_max(value);     break;
+    case PROTO_FLOAT_ID_MOTOR2_REHAB_CYCLES:motor2_set_rehab_cycles(value);  break;
+    case PROTO_FLOAT_ID_M2_ACTV_SPEED:   motor2_set_actv_speed(value);       break;
+    case PROTO_FLOAT_ID_M2_ACTV_LIMIT1:  motor2_set_actv_limit1(value);      break;
+    case PROTO_FLOAT_ID_M2_ACTV_LIMIT2:  motor2_set_actv_limit2(value);      break;
+    case PROTO_FLOAT_ID_M2_ACTV_PAUSE:   motor2_set_actv_pause(value);       break;
+    case PROTO_FLOAT_ID_M2_ACTV_FMAX:    motor2_set_actv_fmax(value);        break;
+    case PROTO_FLOAT_ID_M2_ACTV_STIFF:   motor2_set_actv_stiffness(value);   break;
+    default: break;
+    }
+}
+
+/* --- UART3 IO dispatch → motor_ctrl --- */
+static void app_io_callback(uint8_t io_id, uint8_t state)
+{
+    switch (io_id)
+    {
+    case PROTO_IO_ID_M1_START_STOP:
+        if (state == 1u) motor1_start();
+        else             motor1_stop();
+        break;
+    case PROTO_IO_ID_MODE:
+        motor1_ctrl_set_mode(state);
+        break;
+    case PROTO_IO_ID_M2_START_STOP:
+        if (state == 1u) motor2_enable();
+        else             motor2_stop();
+        break;
+    case PROTO_IO_ID_M2_RUN_MODE:
+        motor2_set_mode(state);
+        break;
+    case PROTO_IO_ID_M2_SET_ZERO:
+        motor2_set_zero();
+        break;
+    case PROTO_IO_ID_M2_CLEAR_ERR:
+        motor2_clear_error();
+        break;
+    case PROTO_IO_ID_M2_TRAJ_MODE:
+        g_m2_traj_mode = state;
+        break;
+    case PROTO_IO_ID_M1_REHAB:
+        if (state == 1u) {
+            g_rehab_m1.active = 1u;
+            g_rehab_m1.state  = REHAB_FORWARD;
+            g_rehab_m1.target = motor1_get_rehab_max();
+            g_rehab_m1.half_cycles = 0u;
+            motor1_ctrl_set_mode(0u);  /* force position mode */
+            motor1_start();
+            printf("Rehab M1: start, %.1f<->%.1f x%u\r\n",
+                   (double)motor1_get_rehab_min(),
+                   (double)motor1_get_rehab_max(),
+                   (unsigned int)motor1_get_rehab_cycles());
+        } else {
+            g_rehab_m1.active = 0u;
+            g_rehab_m1.state  = REHAB_IDLE;
+            /* Stop TIM2 only if M2 rehab also idle */
+            if (!g_rehab_m2.active) {
+                motor1_stop();
+            }
+            printf("Rehab M1: stopped\r\n");
+        }
+        break;
+    case PROTO_IO_ID_M2_REHAB:
+        if (state == 1u) {
+            g_rehab_m2.active = 1u;
+            g_rehab_m2.state  = REHAB_FORWARD;
+            g_rehab_m2.target = motor2_get_rehab_max();
+            g_rehab_m2.half_cycles = 0u;
+            g_m2_traj_mode = 0u;   /* force position mode */
+            motor2_enable();
+            /* Kick off control loop (normally started by motor1_start) */
+            if (my_Order_mode.start_or_stop != _start) {
+                my_Order_mode.start_or_stop = _start;
+                TIM2_Start_IT();
+            }
+            printf("Rehab M2: start, %.1f<->%.1f x%u\r\n",
+                   (double)motor2_get_rehab_min(),
+                   (double)motor2_get_rehab_max(),
+                   (unsigned int)motor2_get_rehab_cycles());
+        } else {
+            g_rehab_m2.active = 0u;
+            g_rehab_m2.state  = REHAB_IDLE;
+            motor2_stop();
+            /* Stop control loop only if M1 rehab is also idle */
+            if (!g_rehab_m1.active) {
+                my_Order_mode.start_or_stop = _stop;
+                TIM2_Stop_IT();
+            }
+            printf("Rehab M2: stopped\r\n");
+        }
+        break;
+    case PROTO_IO_ID_SYS_RUN:
+        if (state == 1u) {
+            my_Order_mode.start_or_stop = _start;
+            TIM2_Start_IT();
+            printf("SYS: control loop started\r\n");
+        } else {
+            my_Order_mode.start_or_stop = _stop;
+            TIM2_Stop_IT();
+            printf("SYS: control loop stopped\r\n");
+        }
+        break;
+    case PROTO_IO_ID_M1_ACTV_REHAB:
+        if (state == 1u) {
+            g_actv_m1.active = 1u;
+            g_actv_m1.state  = ACTV_PAUSE_1;
+            g_actv_m1.pos    = motor1_get_actv_limit1();
+            g_actv_m1.vel    = 0.0f;
+            g_actv_m1.pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+            g_actv_traj_pos  = motor1_get_actv_limit1();
+            /* Kick off control loop if not running */
+            if (my_Order_mode.start_or_stop != _start) {
+                my_Order_mode.start_or_stop = _start;
+                TIM2_Start_IT();
+            }
+            motor1_ctrl_set_mode(1u);  /* velocity mode for force compliance */
+            motor1_start();
+            printf("ActiveRehab M1: start, %.1f<->%.1f spd=%.1f tmax=%.1f k=%.1f\r\n",
+                   (double)motor1_get_actv_limit1(),
+                   (double)motor1_get_actv_limit2(),
+                   (double)motor1_get_actv_speed(),
+                   (double)motor1_get_actv_tmax(),
+                   (double)motor1_get_actv_stiffness());
+        } else {
+            g_actv_m1.active = 0u;
+            if (!g_rehab_m1.active && !g_rehab_m2.active) {
+                motor1_stop();
+            }
+            printf("ActiveRehab M1: stopped\r\n");
+        }
+        break;
+    case PROTO_IO_ID_M2_ACTV_REHAB:
+        if (state == 1u) {
+            /* Position Motor1 first based on mode */
+            motor1_ctrl_set_mode(0u);  /* position mode */
+            if (g_actv_m2_mode == 1u) {
+                motor1_set_angle(0.0f);
+            } else {
+                motor1_set_angle(80.0f);
+            }
+            g_actv_m2.active = 1u;
+            g_actv_m2.state  = ACTV_PAUSE_1;
+            g_actv_m2.pos    = motor2_get_actv_limit1();
+            g_actv_m2.vel    = 0.0f;
+            g_actv_m2.pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+            g_actv_traj_pos_m2 = motor2_get_actv_limit1();
+            if (my_Order_mode.start_or_stop != _start) {
+                my_Order_mode.start_or_stop = _start;
+                TIM2_Start_IT();
+            }
+            motor1_start();
+            motor2_enable();
+            printf("ActiveRehab M2: mode=%u start, %.1f<->%.1f fmax=%.1f k=%.1f\r\n",
+                   (unsigned int)g_actv_m2_mode,
+                   (double)motor2_get_actv_limit1(),
+                   (double)motor2_get_actv_limit2(),
+                   (double)motor2_get_actv_fmax(),
+                   (double)motor2_get_actv_stiffness());
+        } else {
+            g_actv_m2.active = 0u;
+            motor2_stop();
+            if (!g_rehab_m1.active && !g_rehab_m2.active && !g_actv_m1.active) {
+                motor1_stop();
+            }
+            printf("ActiveRehab M2: stopped\r\n");
+        }
+        break;
+    case PROTO_IO_ID_M2_ACTV_MODE:
+        g_actv_m2_mode = (state == 2u) ? 2u : 1u;
+        printf("ActiveRehab M2: mode=%u\r\n", (unsigned int)g_actv_m2_mode);
+        break;
+    case PROTO_IO_ID_FORCE_ZERO:
+        USART2_DR304SetZero();
+        break;
+    default: break;
+    }
+}
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+	
+
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_SoftI2C_Init();
+  MX_TIM9_Init();
+  MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
+  MX_CAN1_Init();
+  MX_TIM2_Init();
+  MX_USART3_UART_Init();
+  MX_TIM6_Init();
+  /* USER CODE BEGIN 2 */
+
+	Controller_Init();
+      // 鍒濆鍖栧欢鏃跺嚱鏁?
+    delay_init();
+	    proto_transport_init();
+	    proto_app_init();
+	    proto_app_set_float_callback(app_float_callback);
+	    proto_app_set_io_callback(app_io_callback);
+	    flash_store_load();
+
+    uint8_t soft_i2c_scl_high = 0U;
+    uint8_t soft_i2c_sda_high = 0U;
+    HAL_StatusTypeDef mpu_init_status;
+    SoftI2C_GetBusState(&soft_i2c_scl_high, &soft_i2c_sda_high);
+    printf("Boot: IMU init start (SCL=%u SDA=%u)\r\n",
+           (unsigned int)soft_i2c_scl_high, (unsigned int)soft_i2c_sda_high);
+    mpu_init_status = MPU6050_Init();
+    if (mpu_init_status == HAL_OK)
+    {
+        printf("Boot: IMU who_am_i=0x%02X\r\n",
+               (unsigned int)MPU6050_GetWhoAmI());
+    }
+    else
+    {
+        printf("Boot: IMU init error=%d\r\n",
+               (int)MPU6050_GetInitError());
+    }
+    if ((mpu_init_status == HAL_OK) &&
+        (MPU6050_Calibrate(400U) == HAL_OK))
+    {
+        g_mpu6050_ready = 1U;
+        printf("Boot: IMU ready\r\n");
+    }
+    else
+    {
+        printf("Boot: IMU init failed (err=%d)\r\n",
+               (int)MPU6050_GetInitError());
+    }
+	
+	AD7606_Init();
+  
+    printf("Boot: system ready\r\n");
+  
+  	HAL_TIM_PWM_Start(&htim9,TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim9,TIM_CHANNEL_2);
+  
+	__HAL_TIM_SetCompare(&htim9, TIM_CHANNEL_1, (uint32_t)(1049.0f * 0.0f));
+	__HAL_TIM_SetCompare(&htim9, TIM_CHANNEL_2, (uint32_t)(1049.0f * 0.0f));
+
+	
+	HAL_CAN_Start(&hcan1);                   // 鍚姩 CAN
+	HAL_Delay(100);
+	RS00_WriteParamUint8(0x7F, 0xFD, 0x7005, 0);
+	
+	// 绛夊緟绯荤粺绋冲畾锛堝彲閫夛級
+	HAL_Delay(2000);
+
+	// 1. 浣胯兘鐢垫満锛堢數鏈篒D=0x7F锛屼富鏈篒D=0xFD锛?
+	RS00_Enable(0x7F, 0xFD);
+	HAL_Delay(500);  // 绛夊緟浣胯兘瀹屾垚
+	HAL_Delay(500);
+	RS00_StartHoming(0x7F,0xFD);
+	
+	uint32_t last_time = HAL_GetTick();
+	uint32_t mpu_sample_time = HAL_GetTick();
+	uint32_t mpu_print_time = HAL_GetTick();
+	
+	 // 涓婄數鍏堝畬鎴愬洖闆?
+    //void Home_Motor_Safe(void);
+
+//    //鍥為浂缁撴潫锛岀幇鍦?g_total_angle_1 宸茬粡鏄?0
+//    // 璁剧疆瀹氱偣鎺у埗
+//    my_Order_mode.start_or_stop = _start;
+//    my_Order_mode.mode = dingdian;
+//    my_Order_mode.motor1_jiaodu = 0.0f;   // 姝ゆ椂灏辨槸鍦ㄩ浂鐐?
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  if (g_mpu6050_ready != 0U)
+	  {
+		  uint32_t now = HAL_GetTick();
+		  MPU6050_Process();
+		  if ((uint32_t)(now - mpu_sample_time) >= 5U)
+		  {
+			  mpu_sample_time = now;
+			  (void)MPU6050_RequestUpdate();
+		  }
+		  if ((uint32_t)(now - mpu_print_time) >= 500U)
+		  {
+			  mpu_print_time = now;
+			  /* MPU6050_PrintUSART1(); */
+		  }
+	  }
+	 
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	
+	 
+	
+	   /*can ceshi */
+
+//		Command_Process();
+		control_process();
+		CAN_ProcessReceivedFrames();
+		//USART2_DR304PrintTask();
+
+//		 printf("RAW=%.2f\r\n", Sensor_jiaodu_1.Value);
+//			HAL_Delay(500);
+		// 100ms鎵ц涓€娆＄殑浠ｇ爜
+		if(HAL_GetTick() - last_time >= 500)
+		{
+			last_time = HAL_GetTick();
+			g_100ms_counter++;
+#if ENABLE_USART1_FLOAT_TEST
+			
+			float send_data[10] =
+			{
+				1.1f,
+				2.2f,
+				3.3f,
+				4.4f,
+				5.5f,
+				6.6f,
+				7.7f,
+				8.8f,
+				9.9f,
+				10.1f
+			};
+			
+			uart_send_10float(send_data);
+#endif
+			
+//			printf("Sensor_jiaodu_1.Value = %.4f g_total_angle_1 = %.4f\r\n",Sensor_jiaodu_1.Value, g_total_angle_1);
+
+		}
+
+		proto_transport_poll();
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 168;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/* USER CODE BEGIN 4 */
+
+
+void set_motor_pwm(float pwm1,float pwm2)
+{
+	
+	float real_pwm1, real_pwm2;
+	real_pwm1 = limit(pwm1,1.0f,0.0f);
+	real_pwm2 = limit(pwm2,1.0f,0.0f);
+	
+	//printf("real1 = %f,real2 =%f\n",real_pwm1,real_pwm2);
+	
+	__HAL_TIM_SetCompare(&htim9, TIM_CHANNEL_1, (uint32_t)(Motor_count * real_pwm1));
+	__HAL_TIM_SetCompare(&htim9, TIM_CHANNEL_2, (uint32_t)(Motor_count * real_pwm2)); 
+}
+
+void control_process(void)
+{
+	if (my_Order_mode.start_or_stop == _start)
+	{
+		if (My_state == work_flag)
+		{
+			switch (controller_flag)		//閿熸枻鎷烽敓鏂ゆ嫹閿熼樁鍒侯剨鎷烽敓鏂ゆ嫹閿熸彮鎭㈡唻鎷烽敓绐栴叏鎷烽敓鏂ゆ嫹妯￠敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸彮浼欐嫹閿熸枻鎷穡ork_flag,閿熸枻鎷?0ms閿熸枻鎷烽敓鏂ゆ嫹閿熼摪闈╂嫹浣嶄竴閿熻娇鐨勨槄鎷?
+			{
+				case wait:
+					controller_flag = caiji;
+				break;
+				case caiji:
+					AD_Caiyang_process();		//閿熸枻鎷烽敓鏂ゆ嫹閿熸嵎闈╂嫹閿熼摪纰夋嫹h_as5600閿熸枻鎷烽敓鏂ゆ嫹宄佺櫢鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿?
+					controller_flag = creat_order;
+				break;
+				case creat_order:
+					Order_Creat_process();
+					controller_flag = controller_cal;
+				break;
+			case controller_cal:
+				/* Mode dispatch: PID or PWM */
+				if (my_Order_mode.mode == PWM_test)
+				{
+					float temp_pwm = motor1_get_pwm_duty();
+					float temp = 0.0001f;
+					if (temp_pwm > temp)
+					{
+						zhan_1_temp = temp_pwm;
+						zhan_2_temp = 0.0f;
+					}
+					else if (fabs(temp_pwm) <= temp)
+					{
+						zhan_1_temp = 0.0f;
+						zhan_2_temp = 0.0f;
+					}
+					else
+					{
+						zhan_1_temp = 0.0f;
+						zhan_2_temp = -temp_pwm;
+					}
+				}
+				else
+				{
+					Motor1_dingdian_control_process();
+				}
+				set_motor_pwm(zhan_1_temp, zhan_2_temp);
+				controller_flag = fresh_data;
+			break;
+				case fresh_data:
+					//printf("5\n");
+					Signal_UPdata_Process();
+					My_state = stop_flag;						//閿熼ズ杈炬嫹閿熸枻鎷锋椂閿熷彨鏂綇鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹涓洪敓鏂ゆ嫹閿熸枻鎷风姸鎬?
+					controller_flag = wait;					
+				break;
+				default:
+					//printf("6\n");
+					controller_flag = wait;
+					break;
+				}
+		}
+	}
+	else
+	{
+		set_motor_pwm(0.0f, 0.0f);
+	}
+	
+}
+
+
+
+void AD_Caiyang_process(void)
+{
+	static float g_prev_angle_littlt = 0.0f;
+//璇诲彇鐢垫祦鍊煎拰缂栫爜鍣ㄥ弬鏁帮紝鍚屾椂鏇存柊缂栫爜鍣?
+	int16_t sensor_value[8] = {0};
+	Get_7606_Average(sensor_value);
+
+	//鐪熸槸鐢靛帇鍊?U * 10 / 22, 鐢靛帇鑼冨洿鏄?V锛孉D7606鐢靛帇 * 2.2f = 鐪熷疄鐨勭數鍘嬪€?
+	Sensor_jiaodu_1.Value_AD = 2.2f * limit(10.0f * sensor_value[5] / 0xFFFF, 5.0 , 0.0);//10.0 * (sensor_value[0] - 0x00) / (0x73BC - 0);
+	Sensor_Data_convert(P_Sensor_jiaodu_1);
+	
+	// 璁＄畻绱瑙掑害
+	float current_angle = Sensor_jiaodu_1.Value; // 褰撳墠缁濆瑙掑害鍊?0-360)
+	static int32_t revolution = 0; // 鏃嬭浆鍦堟暟
+	
+	
+	float delta = current_angle - g_prev_angle_littlt;
+	g_prev_angle_littlt = current_angle;
+	if(delta > 180.0f)
+	{
+		revolution--;
+	}
+	else if(delta < -180.0f)
+	{
+		revolution++;
+	}
+	
+	g_total_angle_1 = (float)revolution * 360.0f + current_angle;
+	
+	g_prev_angle_1 = current_angle;
+	
+	Sensor_I1.Value_AD = limit(10.0f * sensor_value[4] / 0xFFFF, 5.0 , 0.0);
+	Sensor_I1.Value = Sensor_I1.Value_AD * 1000.0f / 20 * 1000.0f;	//1A瀵瑰簲鐨勭數鍘嬪€兼槸20mV锛岃繖閲岃€冮獙鐢垫祦妫€娴嬭兘鍔涚殑澶у皬锛屾渶鍚庣殑鍒版槸mA
+}
+
+/* --- Rehab state advance (called when trajectory reaches target) --- */
+static void rehab_advance(rehab_ctx_t *ctx, uint8_t is_motor2)
+{
+    uint16_t total;
+
+    switch (ctx->state)
+    {
+    case REHAB_IDLE:
+        break;
+    case REHAB_FORWARD:
+        ctx->state = REHAB_BACKWARD;
+        if (is_motor2) {
+            ctx->target = motor2_get_rehab_min();
+            total = motor2_get_rehab_cycles();
+        } else {
+            ctx->target = motor1_get_rehab_min();
+            total = motor1_get_rehab_cycles();
+        }
+        ctx->half_cycles++;
+        break;
+    case REHAB_BACKWARD:
+        ctx->half_cycles++;
+        if (is_motor2) total = motor2_get_rehab_cycles();
+        else            total = motor1_get_rehab_cycles();
+        if (ctx->half_cycles >= total * 2u) {
+            ctx->state  = REHAB_RETURN;
+            ctx->target = 0.0f;
+        } else {
+            ctx->state = REHAB_FORWARD;
+            if (is_motor2) ctx->target = motor2_get_rehab_max();
+            else           ctx->target = motor1_get_rehab_max();
+        }
+        break;
+    case REHAB_RETURN:
+        ctx->active = 0u;
+        ctx->state  = REHAB_IDLE;
+        if (is_motor2) {
+            motor2_stop();
+            if (!g_rehab_m1.active) {
+                my_Order_mode.start_or_stop = _stop;
+                TIM2_Stop_IT();
+            }
+        } else {
+            if (!g_rehab_m2.active) motor1_stop();
+        }
+        printf("Rehab %s: done\r\n", is_motor2 ? "M2" : "M1");
+        break;
+    }
+}
+
+/* --- T-wave virtual trajectory tick (100Hz) --- */
+static void actv_twave_tick(actv_rehab_t *ctx)
+{
+	float limit1 = motor1_get_actv_limit1();
+	float limit2 = motor1_get_actv_limit2();
+	float speed  = motor1_get_actv_speed() * 0.01f;  /* deg/s -> deg/cycle */
+	float accel  = 0.1f;  /* deg/cycle^2, same as passive rehab */
+
+	switch (ctx->state)
+	{
+	case ACTV_PAUSE_1:
+		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+		ctx->state = ACTV_MOVING_TO_2;
+		ctx->vel   = 0.0f;
+		break;
+
+	case ACTV_MOVING_TO_2:
+		{
+			float error = limit2 - ctx->pos;
+			if (fabsf(error) < 0.01f) {
+				ctx->pos = limit2;
+				ctx->vel = 0.0f;
+				ctx->state = ACTV_PAUSE_2;
+				ctx->pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+			} else {
+				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+				float dist  = fabsf(error);
+				float v_max = speed;
+				float v_decel = sqrtf(2.0f * accel * dist);
+				if (v_decel < v_max) v_max = v_decel;
+				if (v_max < 0.01f)   v_max = 0.01f;
+				ctx->vel += accel * dir;
+				if (ctx->vel >  v_max) ctx->vel =  v_max;
+				if (ctx->vel < -v_max) ctx->vel = -v_max;
+				ctx->pos += ctx->vel;
+				if (fabsf(ctx->pos - limit2) < 0.005f) ctx->pos = limit2;
+			}
+		}
+		break;
+
+	case ACTV_PAUSE_2:
+		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+		ctx->state = ACTV_MOVING_TO_1;
+		ctx->vel   = 0.0f;
+		break;
+
+	case ACTV_MOVING_TO_1:
+		{
+			float error = limit1 - ctx->pos;
+			if (fabsf(error) < 0.01f) {
+				ctx->pos = limit1;
+				ctx->vel = 0.0f;
+				ctx->state = ACTV_PAUSE_1;
+				ctx->pause_ticks = (uint16_t)(motor1_get_actv_pause() * 100.0f);
+			} else {
+				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+				float dist  = fabsf(error);
+				float v_max = speed;
+				float v_decel = sqrtf(2.0f * accel * dist);
+				if (v_decel < v_max) v_max = v_decel;
+				if (v_max < 0.01f)   v_max = 0.01f;
+				ctx->vel += accel * dir;
+				if (ctx->vel >  v_max) ctx->vel =  v_max;
+				if (ctx->vel < -v_max) ctx->vel = -v_max;
+				ctx->pos += ctx->vel;
+				if (fabsf(ctx->pos - limit1) < 0.005f) ctx->pos = limit1;
+			}
+		}
+		break;
+	}
+}
+
+/* --- M2 T-wave virtual trajectory tick (100Hz) --- */
+static void actv_twave_tick_m2(actv_rehab_t *ctx)
+{
+	float limit1 = motor2_get_actv_limit1();
+	float limit2 = motor2_get_actv_limit2();
+	float speed  = motor2_get_actv_speed() * 0.01f;
+	float accel  = 0.1f;
+
+	switch (ctx->state)
+	{
+	case ACTV_PAUSE_1:
+		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+		ctx->state = ACTV_MOVING_TO_2;
+		ctx->vel   = 0.0f;
+		break;
+	case ACTV_MOVING_TO_2:
+		{
+			float error = limit2 - ctx->pos;
+			if (fabsf(error) < 0.01f) {
+				ctx->pos = limit2; ctx->vel = 0.0f;
+				ctx->state = ACTV_PAUSE_2;
+				ctx->pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+			} else {
+				float dir = (error > 0.0f) ? 1.0f : -1.0f;
+				float v_max = (speed < sqrtf(2.0f*accel*fabsf(error))) ? speed : sqrtf(2.0f*accel*fabsf(error));
+				if (v_max < 0.01f) v_max = 0.01f;
+				ctx->vel += accel * dir;
+				if (ctx->vel > v_max) ctx->vel = v_max;
+				if (ctx->vel < -v_max) ctx->vel = -v_max;
+				ctx->pos += ctx->vel;
+				if (fabsf(ctx->pos - limit2) < 0.005f) ctx->pos = limit2;
+			}
+		}
+		break;
+	case ACTV_PAUSE_2:
+		if (ctx->pause_ticks > 0u) { ctx->pause_ticks--; return; }
+		ctx->state = ACTV_MOVING_TO_1;
+		ctx->vel   = 0.0f;
+		break;
+	case ACTV_MOVING_TO_1:
+		{
+			float error = limit1 - ctx->pos;
+			if (fabsf(error) < 0.01f) {
+				ctx->pos = limit1; ctx->vel = 0.0f;
+				ctx->state = ACTV_PAUSE_1;
+				ctx->pause_ticks = (uint16_t)(motor2_get_actv_pause() * 100.0f);
+			} else {
+				float dir = (error > 0.0f) ? 1.0f : -1.0f;
+				float v_max = (speed < sqrtf(2.0f*accel*fabsf(error))) ? speed : sqrtf(2.0f*accel*fabsf(error));
+				if (v_max < 0.01f) v_max = 0.01f;
+				ctx->vel += accel * dir;
+				if (ctx->vel > v_max) ctx->vel = v_max;
+				if (ctx->vel < -v_max) ctx->vel = -v_max;
+				ctx->pos += ctx->vel;
+				if (fabsf(ctx->pos - limit1) < 0.005f) ctx->pos = limit1;
+			}
+		}
+		break;
+	}
+}
+
+void Order_Creat_process(void)
+{
+	/* ==================== Motor1 Trajectory ==================== */
+	{
+		static float    m1_traj_current  = 0.0f;
+		static float    m1_traj_velocity = 0.0f;
+		float m1_max_speed = motor1_get_max_speed();
+		float m1_max_accel = 0.1f;
+
+		/* Active rehab: T-wave virtual trajectory + force compliance */
+		if (g_actv_m1.active)
+		{
+			float ft_vals[6];
+			float mx, tmax, k;
+
+			/* 1. Advance T-wave virtual trajectory */
+			actv_twave_tick(&g_actv_m1);
+			g_actv_traj_pos = g_actv_m1.pos;
+
+			/* 2. Force compliance: check Mx torque, set motor velocity */
+			USART2_DR304GetLatestValues(ft_vals);
+			mx    = ft_vals[3];                 /* Mx (N*m) */
+			tmax  = motor1_get_actv_tmax();
+			k     = motor1_get_actv_stiffness();
+
+			if (fabsf(mx) > tmax)
+			{
+				float excess = fabsf(mx) - tmax;
+				float dir   = (mx > 0.0f) ? -1.0f : 1.0f;  /* -sign(Mx): torque & vel opposite */
+				my_Order_mode.motor1_sudu = dir * excess / k;
+			}
+			else
+			{
+				my_Order_mode.motor1_sudu = 0.0f;
+			}
+
+			/* Velocity mode integration & skip PID */
+			m1_traj_current += my_Order_mode.motor1_sudu * 0.01f;
+			Control_P_PID.In_val = m1_traj_current;
+		}
+		else
+		{
+
+		/* Rehab override: replace target angle with rehab state machine target */
+		if (g_rehab_m1.active)
+		{
+			my_Order_mode.motor1_jiaodu = g_rehab_m1.target;
+		}
+
+		if (my_Order_mode.mode != 1u)  /* 0=position, 1=velocity, 3=PWM handled in controller_cal */
+		{
+			/* Position mode: ramp toward target */
+			float target = my_Order_mode.motor1_jiaodu;
+			float error  = target - m1_traj_current;
+			if (fabsf(error) < 0.01f) { m1_traj_current = target; m1_traj_velocity = 0.0f; }
+			else
+			{
+				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+				float dist  = fabsf(error);
+				float v_max = m1_max_speed;
+				float v_decel = sqrtf(2.0f * m1_max_accel * dist);
+				if (v_decel < v_max) v_max = v_decel;
+				if (v_max < 0.01f)   v_max = 0.01f;
+				m1_traj_velocity += m1_max_accel * dir;
+				if (m1_traj_velocity >  v_max) m1_traj_velocity =  v_max;
+				if (m1_traj_velocity < -v_max) m1_traj_velocity = -v_max;
+				m1_traj_current += m1_traj_velocity;
+				if (fabsf(m1_traj_current - target) < 0.005f) m1_traj_current = target;
+			}
+		}
+		else
+		{
+			/* Velocity mode: continuously add target velocity */
+			m1_traj_current += my_Order_mode.motor1_sudu * 0.01f;
+		}
+
+		/* Rehab: check if we've reached the target */
+		if (g_rehab_m1.active && fabsf(m1_traj_current - g_rehab_m1.target) < 0.05f)
+		{
+			rehab_advance(&g_rehab_m1, 0u);
+		}
+
+		Control_P_PID.In_val = m1_traj_current;
+	}
+	}
+
+	/* ==================== Motor2 Trajectory ==================== */
+	{
+		/* M2 Active rehab: T-wave + force compliance */
+		if (g_actv_m2.active)
+		{
+			float ft_vals[6];
+			float ff, fmax, k;
+
+			actv_twave_tick_m2(&g_actv_m2);
+			g_actv_traj_pos_m2 = g_actv_m2.pos;
+
+			USART2_DR304GetLatestValues(ft_vals);
+			fmax = motor2_get_actv_fmax();
+			k    = motor2_get_actv_stiffness();
+
+			/* Select force channel by mode */
+			ff = (g_actv_m2_mode == 2u) ? ft_vals[4] : ft_vals[1];  /* Ty(My) or Fy */
+
+			if (fabsf(ff) > fmax)
+			{
+				float excess = fabsf(ff) - fmax;
+				float dir;
+				if (g_actv_m2_mode == 2u) {
+					dir = (ff > 0.0f) ? 1.0f : -1.0f;   /* mode2: no sign flip */
+				} else {
+					dir = (ff > 0.0f) ? -1.0f : 1.0f;   /* mode1: flip sign */
+				}
+				motor2_set_velocity(dir * excess / k);  /* deg/s */
+			}
+			else
+			{
+				motor2_set_velocity(0.0f);
+			}
+
+			/* Force compliance: move from current position, or hold if |F|<Fmax */
+			{
+				static float m2_cmd_pos_rad = 0.0f;
+				static uint8_t m2_cmd_pos_inited = 0u;
+				float vel_rad = motor2_get_velocity() * 0.0174532925f;  /* deg/s -> rad/s */
+
+				if (!m2_cmd_pos_inited) {
+					m2_cmd_pos_rad = motor_feedback.position;
+					m2_cmd_pos_inited = 1u;
+				}
+
+				if (fabsf(vel_rad) < 0.0001f) {
+					/* Below threshold: hold current position */
+					m2_cmd_pos_rad = motor_feedback.position;
+				} else {
+					/* Above threshold: integrate velocity */
+					m2_cmd_pos_rad += vel_rad * 0.01f;  /* rad/cycle */
+				}
+
+				motor2_send_control(m2_cmd_pos_rad,
+				                    vel_rad,
+				                    motor2_get_torque(),
+				                    motor2_get_kp(),
+				                    motor2_get_kd());
+			}
+		}
+		else
+		{
+
+		/* Rehab override */
+		if (g_rehab_m2.active)
+		{
+			motor2_set_position(g_rehab_m2.target);
+		}
+
+		float m2_target    = motor2_get_position();   /* deg */
+		float m2_max_spd   = motor2_get_max_speed();  /* deg/cycle */
+		float m2_max_accel = 0.1f;
+
+		if (g_m2_traj_mode == 0u)
+		{
+			/* Position mode: ramp toward target */
+			float error = m2_target - g_m2_traj_deg;
+			if (fabsf(error) < 0.01f) { g_m2_traj_deg = m2_target; g_m2_traj_vel = 0.0f; }
+			else
+			{
+				float dir   = (error > 0.0f) ? 1.0f : -1.0f;
+				float dist  = fabsf(error);
+				float v_max = m2_max_spd;
+				float v_decel = sqrtf(2.0f * m2_max_accel * dist);
+				if (v_decel < v_max) v_max = v_decel;
+				if (v_max < 0.01f)   v_max = 0.01f;
+				g_m2_traj_vel += m2_max_accel * dir;
+				if (g_m2_traj_vel >  v_max) g_m2_traj_vel =  v_max;
+				if (g_m2_traj_vel < -v_max) g_m2_traj_vel = -v_max;
+				g_m2_traj_deg += g_m2_traj_vel;
+				if (fabsf(g_m2_traj_deg - m2_target) < 0.005f) g_m2_traj_deg = m2_target;
+			}
+		}
+		else
+		{
+			/* Velocity mode: continuously add target velocity */
+			g_m2_traj_vel  = motor2_get_velocity() * 0.01f;   /* deg/s -> deg/cycle, stored for telemetry */
+			g_m2_traj_deg += g_m2_traj_vel;
+		}
+
+		/* Rehab: check arrival */
+		if (g_rehab_m2.active && fabsf(g_m2_traj_deg - g_rehab_m2.target) < 0.05f)
+		{
+			rehab_advance(&g_rehab_m2, 1u);
+		}
+
+		/* Send RS00 control: convert degrees -> radians */
+		#define M2_DEG_TO_RAD  0.0174532925f  /* PI/180 */
+		motor2_send_control(g_m2_traj_deg * M2_DEG_TO_RAD,
+		                    0.0f,
+		                    motor2_get_torque(),
+		                    motor2_get_kp(),
+		                    motor2_get_kd());
+}
+	}
+}
+
+void Motor1_dingdian_control_process(void)
+{
+	float u = 0.0f;
+	
+	/* In_val set by Order_Creat_process (trajectory planner) */
+//	Control_P_PID.Feedback_val = Sensor_jiaodu_1.Value;	//闄や互67.5
+	Control_P_PID.Feedback_val = roll;	//°，±90°
+
+		
+	//Control_P_PID.kp = Control_P_PID.kp * 0.01f;
+	
+	PID_controller(P_Control_P_PID);
+	
+	u = -1.0f * Control_P_PID.u_out;
+	
+//	printf("u=%f\r\n",u);
+
+	float deadband = 0.04f;
+	if (u > deadband)
+	{
+		zhan_1_temp = u - deadband;
+		zhan_2_temp = 0.0f;
+	}
+	else if (fabsf(u) <= deadband)
+	{
+		zhan_1_temp = 0.0f;
+		zhan_2_temp = 0.0f;						
+	}
+	else
+	{
+		zhan_1_temp = 0.0f;
+		zhan_2_temp = -u - deadband;
+	}			
+}
+
+
+
+		
+
+int fputc(int c, FILE *stream)
+{
+    (void)stream;
+    HAL_UART_Transmit(&huart1, (unsigned char *)&c, 1, 1000);
+    return 1;
+}
+
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if(GPIO_Pin == GPIO_PIN_3)
+    {
+        Chilun_arrive_flag = 1;
+    }
+}
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

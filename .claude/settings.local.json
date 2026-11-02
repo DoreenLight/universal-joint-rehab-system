@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//tmp/miniarm_android/MiniArm/app/src/main/java/com/embeded/**)",
+      "Bash(./gradlew assembleDebug --no-daemon)"
+    ]
+  }
+}

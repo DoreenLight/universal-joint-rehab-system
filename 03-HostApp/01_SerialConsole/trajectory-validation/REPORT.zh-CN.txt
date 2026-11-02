@@ -1,0 +1,72 @@
+历史阶段报告：以下内容记录首次未获固件修改授权时的结果。
+2026-10-22 后续已获授权并完成源码替换及离线验证；最新报告位于 02-Firmware/01_MotorBoard/tests/active_reference/REPORT.zh-CN.txt。
+
+腕关节主动康复参考轨迹分析与验证报告
+日期：2026-10-22
+状态：部分完成；正式集成阻塞。当前上位机仍显示原下位机轨迹。
+
+1. 项目分析
+根目录是多工程归档，不是 Git 仓库。实际相关工程是 03-HostApp/01_SerialConsole，CMake target Uart_controller，依赖 Qt Core、Widgets、SerialPort、Charts。其中 mainwindow.cpp、mainwindow.h、floatiddefs.h 及若干构建文件在本次开始前已有修改，全部保留。
+03_BleConsole 的主动康复入口仍有安全锁定；02_SerialReader 是协议调试工程。均不是本次双通道 T 波图表的生成端。
+
+参考轨迹真正生成处：02-Firmware/01_MotorBoard/Core/Src/main.c 的 actv_twave_tick（约811行）、actv_twave_tick_m2（约883行）。这是下位机100Hz离散状态机，有速度增加、减速距离估计及位置容差，不是 Qt 中的简单线性插值。
+Order_Creat_process 调用上述函数，将结果写入 g_actv_traj_pos / g_actv_traj_pos_m2。Signal_UPdata_Process 每5个控制周期上传一次，名义约20Hz。
+
+三条曲线的数据：
+Motor1：0x01 是 Control_P_PID.In_val（控制设定值）；0x02 是 roll（IMU反馈，不是此处直接读取编码器）；0x0B 是虚拟参考位置。
+Motor2：0x11 是 g_m2_traj_deg（计划位置）；0x12 是 motor_feedback.position*57.29578（CAN位置反馈，弧度转度）；0x1D 是虚拟参考位置。
+注意同一 ID 有方向语义：向下写入0x0B/0x1D是速度参数，向上遥测则是参考角度。不能把新的参考角度通过这些 ID 写回设备。
+
+Qt 数据路径：ProtocolWorker::processFrame -> telemetryReceived -> MainWindow::onTelemetryReceived -> mTelemetryQueue -> 50ms批处理 -> feedMotorChart。记录CSV使用原始遥测；绘图批处理按ID保留批次最后值。康复图表通道配置见 mainwindow.cpp 1835/1846附近。
+feedMotorChart 的 ctx.time 每次加1，是刷新点序号；不构成设备训练时钟。treatTimer 虽有秒计数代码，但本文件只发现 treatRunning 的 false 初始化及条件读取，不能据此实现同步训练时间。
+未在这些 Qt 路径中找到参考值减反馈值的跟踪误差计算。固件的虚拟参考值与力顺应控制输出分开；Motor1顺应速度来自Mx，Motor2来自对应力/力矩通道。原主动机制还包括速度模式与M2启动时M1定位，不能简化为完全无电机命令。上述原逻辑未改。
+
+2. 时间与角度来源
+app/motor_ctrl.c 分别保存两个通道的 speed、limit1、limit2、pause，均有独立setter/getter；当前源码默认值为30°/s、-30°、30°、2s。Qt主动面板通过回车发送参数；界面默认文本不代表设备已确认值。固件setter直接存储，允许运行中改变参数。
+主动状态初始为 limit1 停顿，再向limit2运动、停顿、返回limit1。limit1/2没有在这条路径强制排序，应保留方向，不能擅自等同最小/最大。
+主动状态没有周期数上限或自动结束时间；被动康复的默认5周期属于另一状态机。主动只有启动/停止入口，不能把被动周期参数套入主动模式。
+
+使用原函数原文提取的离线C++复现（legacy_timing.cpp；仅替换参数getter与状态类型），在名义10ms每tick下：
+两个通道默认参数均为：limit1停顿201 ticks、去limit2运动状态223 ticks、limit2停顿201 ticks、返回运动状态223 ticks；合计848 ticks，即8.48s。
+这些是包含状态切换tick的状态驻留时间，不等同每段实际发生位移的持续时间；并非实机测量。完整接入还需明确边界tick对应规则。
+因此不能用60/30=2s作为与原运动段严格等价的时长，也不能承诺5周期40s。
+补充参数 -12°、23°、17°/s、0.4s 时，两通道复现均在99999 ticks内未完成首个运动阶段，最终仍处于MOVING_TO_2，位置约22.95°。这是原算法离线异常，未改固件；不能为该参数声称已知有限周期。输出见 legacy-timing.txt。
+
+3. 候选算法与范围
+quintic_candidate.h 仅为离线候选，不被主工程包含或链接，不调用串口、电机或Qt。
+s(u)=10u^3-15u^4+6u^5，theta=a+(b-a)s(u)，u=clamp(t/T,0,1)。
+速度：(b-a)/T * 30u^2(1-u)^2。
+加速度：(b-a)/T^2 * 60u(1-u)(1-2u)。
+u=0/1时位置准确、速度与加速度为0；与恒定保持段C2连续。s单调，因此无角度超调。下降/反向复用同一个segment。
+cycle显式接受上升、顶部、下降、底部时长，按传入时间确定性计算，不累加时钟。测试覆盖多周期、零保持时间、反向范围、同角度、非有限/非正运动时长及segment时间钳位。
+非法参数抛异常只属于离线验证契约，尚未作为设备参数处理机制。cycle没有训练结束策略，因为当前主动源码没有该策略；禁止直接接入后虚构结束时间。
+相同位移和时长下，五次曲线峰值速度是平均速度的1.875倍。不能把原“速度参数”直接解释为新曲线峰值而同时保证运动时长不变。
+
+4. 新增文件与功能保留
+仅新增 trajectory-validation 目录：候选头文件、verify.cpp、legacy_timing.cpp、数学结果、原轨迹复现结果、采样CSV、本报告、构建忽略规则与启动日志。
+主程序源码、UI、CMakeLists、协议、固件、安全机制、实际反馈、被动训练、双通道逻辑均未修改。没有新增向设备发送参考位置的路径。
+build-qt 为独立基线编译与复现产物，未使用或覆盖原build目录；verify.exe及build-qt由本目录.gitignore忽略。未移动任何已有文件。
+
+5. 已完成验证
+数学：verify.cpp 编译并执行通过，详细检查总数见 math-results.txt；输出20004个采样点到 candidate_samples.csv。测试为4组离线参数，涵盖不同角度/时长及退化范围；不等于实际Motor1/Motor2联调。
+第一组候选时长取默认旧状态驻留时间2.23/2.01/2.23/2.01s，只验证候选总周期8.48s；不宣称与旧轨迹每个采样边界一致。其余为合成参数。
+对候选验证了端点位置、零速度、零加速度、有限差分导数一致性、范围、保持值、周期连接与5周期返回。没有验证真实训练结束或设备同步。
+Qt基线：Qt 6.8.2 MinGW64 + GCC13.1 + CMake/Ninja，配置成功、6步构建成功。配置提示缺少可选Vulkan头文件，但链接成功。
+启动检查：QT_QPA_PLATFORM=offscreen运行新编译的原程序，4秒仍存活、stderr为空；随后仅结束此次测试进程。没有连接串口、发送控制命令或操作真实硬件。此项不是交互UI验收或曲线视觉检查。
+新候选C++：使用 -std=c++17 -O2 -Wall -Wextra -pedantic 编译成功。
+
+6. 未完成与阻塞原因
+未将S形轨迹接入正式程序，未验证实际显示、训练同步、真实设备、患者跟踪或人体效果。
+原因来自用户任务的硬约束：不得修改固件/协议，不得建立不同步的独立轨迹时钟，必须保持原训练时间与动态参数语义。现有Qt既不生成轨迹，也没有收到设备阶段、tick、有效参数回读或训练起始时间。遥测位置在停顿时不能唯一确定阶段进度；单纯从位置反推时间也不能准确复现原非线性离散运动及动态修改。仅做显示映射会掩盖数据语义和时间不一致，不能宣称满足要求。
+
+7. 继续实施所需决定
+A. 如果任务描述对应另一版具有本地参考轨迹和训练时钟的Qt程序，请提供该版本路径，以该实现为准继续。
+B. 如果当前归档就是目标版本，需要明确放宽“不得改下位机固件”，才能进一步设计仅调整虚拟参考生成的方案，并先解决旧算法运动时间/异常参数的定义。仍不改力顺应控制、通信协议或反馈路径，也不自动烧录/连接设备。
+本报告没有把B作为已经授权的操作。两条路径均无需覆盖已有未提交修改。
+
+复现示例（在本目录执行，先将 C:\Qt\Tools\mingw1310_64\bin 加入PATH）：
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic verify.cpp -o verify.exe
+.\verify.exe
+g++ -std=c++17 legacy_timing.cpp -o build-qt/legacy_timing.exe
+.\build-qt\legacy_timing.exe
+Qt基线可用 cmake --build build-qt 重新编译。

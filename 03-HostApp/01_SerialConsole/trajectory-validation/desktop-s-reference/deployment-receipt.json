@@ -1,0 +1,13 @@
+{
+  "updatedUtc": "2026-10-23T07:17:00.7731061Z",
+  "source": "C:\\Users\\Lenovo\\Desktop\\腕部驱动设备\\01_上位机程序",
+  "sourceSha256": {
+    "mainwindow.cpp": "10ecef23286ccabb9ec032e3fde72d3229f73e204726df11e312b3e050f92330",
+    "mainwindow.h": "483e7511a06f76b1ef3b339d469eebbc5c34cdd99cc083c15962e27d853cf9e6"
+  },
+  "executable": "C:\\Users\\Lenovo\\Desktop\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Uart_controller.exe",
+  "executableSha256": "0d1109c3a1003c40bc0da1a432ef1eba3b976525ca7dd8ca4eeda2321adae906",
+  "priorExecutableSha256": "3392e0d39b9b01c43bced9aa47ba79f76fff7a6829aabf441758186bf86a43d2",
+  "shortcutChanged": false,
+  "flashed": false
+}

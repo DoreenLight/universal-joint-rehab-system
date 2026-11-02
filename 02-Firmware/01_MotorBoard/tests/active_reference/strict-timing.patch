@@ -1,0 +1,208 @@
+--- before/app/active_reference.h
++++ after/app/active_reference.h
+@@ -14,7 +14,7 @@
+ 
+ typedef enum {
+     ACTV_REF_OK = 0,
+-    ACTV_REF_REPAIRED_CYCLE, /* exact repeating old (position, velocity) detected */
++    ACTV_REF_LEGACY_CYCLE, /* old path never arrives: no finite time to preserve */
+     ACTV_REF_INVALID,
+     ACTV_REF_TIMING_LIMIT  /* cannot certify the old duration: hold, do not guess */
+ } actv_ref_status_t;
+@@ -54,7 +54,7 @@
+ {
+     float pos = from, vel = 0.0f, anchor_pos = from, anchor_vel = 0.0f;
+     float step_speed = speed * 0.01f;
+-    uint32_t tick, first_crossing = 0u, power = 1u, length = 0u;
++    uint32_t tick, power = 1u, length = 0u;
+     *status = ACTV_REF_OK;
+     if (!isfinite(from) || !isfinite(to) || !isfinite(to - from)
+         || !isfinite(step_speed)) {
+@@ -82,16 +82,12 @@
+             *status = ACTV_REF_INVALID;
+             return 0u;
+         }
+-        if (first_crossing == 0u && ((to > from && pos >= to)
+-                                  || (to < from && pos <= to)))
+-            first_crossing = tick;
+         ++length;
+         if (pos == anchor_pos && vel == anchor_vel) {
+-            if (first_crossing != 0u) {
+-                *status = ACTV_REF_REPAIRED_CYCLE;
+-                return first_crossing + 1u; /* corrected arrival-check tick */
+-            }
+-            *status = ACTV_REF_INVALID; /* no representable progress */
++            /* A first crossing is not an arrival in the legacy state machine.
++             * Do not invent a movement duration for a non-convergent path.
++             * Caller holds only this visual reference, not the motor control. */
++            *status = ACTV_REF_LEGACY_CYCLE;
+             return 0u;
+         }
+         if (length == power) {
+--- before/tests/active_reference/test_reference.c
++++ after/tests/active_reference/test_reference.c
+@@ -45,13 +45,12 @@
+         unsigned now=actv_ref_duration(cases[i][0],cases[i][1],cases[i][2],&status);
+         printf("M%u %.6g -> %.6g speed=%.6g old_ticks=%u new_ticks=%u status=%u\n",
+                m+1,cases[i][0],cases[i][1],cases[i][2],old,now,status);
+-        CHECK(now>0);
+         if(old) { CHECK(status==ACTV_REF_OK); CHECK(now==old); }
+-        else CHECK(status==ACTV_REF_REPAIRED_CYCLE);
++        else CHECK(now==0 && status==ACTV_REF_LEGACY_CYCLE);
+     }
+ }
+ static void duration_sweep(void) {
+-    unsigned m,i,converged=0,repaired=0;
++    unsigned m,i,converged=0,unavailable=0;
+     for(m=0;m<2;++m) for(i=0;i<96;++i) {
+         float a=-47.0f+(float)(i%19)*2.1f;
+         float b=a+3.7f+(float)(i%23)*2.3f;
+@@ -61,11 +60,10 @@
+         if(i%2) { float swap=a; a=b; b=swap; }
+         old=old_duration(m,a,b,speed);
+         now=actv_ref_duration(a,b,speed,&status);
+-        CHECK(now>0);
+         if(old) { CHECK(now==old && status==ACTV_REF_OK); ++converged; }
+-        else { CHECK(status==ACTV_REF_REPAIRED_CYCLE); ++repaired; }
+-    }
+-    printf("Sweep: %u legacy-convergent timings preserved; %u proven cycles repaired (both channels)\n",converged,repaired);
++        else { CHECK(now==0 && status==ACTV_REF_LEGACY_CYCLE); ++unavailable; }
++    }
++    printf("Sweep: %u legacy-convergent timings preserved; %u proven cycles unavailable, no duration invented (both channels)\n",converged,unavailable);
+ }
+ static void trace_old_cycle(void) {
+     actv_rehab_t c={0}; unsigned i;
+@@ -80,17 +78,24 @@
+     fclose(f);
+ }
+ static void cycle_test(unsigned m, float a, float b, float speed, float pause, FILE *csv) {
+-    actv_rehab_t c={0}; uint8_t status; uint16_t pause_ticks;
+-    unsigned forward=actv_ref_duration(a,b,speed,&status);
+-    unsigned backward=actv_ref_duration(b,a,speed,&status);
++    actv_rehab_t c={0}, legacy={0}; uint16_t pause_ticks;
++    unsigned forward=old_duration(m,a,b,speed);
++    unsigned backward=old_duration(m,b,a,speed);
+     unsigned tick, transitions=0,last=0,period;
++    CHECK(forward>0 && backward>0);
+     CHECK(actv_ref_pause(pause,&pause_ticks));
+     period=forward+backward+2u*(pause_ticks+1u);
+     configure(m,a,b,speed,pause); actv_ref_reset(&c,a,pause);
++    legacy.active=1; legacy.state=ACTV_PAUSE_1; legacy.pos=a;
++    legacy.pause_ticks=(uint16_t)(pause*100.0f);
+     for(tick=1;tick<=5*period;++tick) {
+         unsigned prev=c.state;
+         float previous=c.pos;
+         new_tick(m,&c);
++        if(m) legacy_tick_m2(&legacy); else legacy_tick(&legacy);
++        CHECK(c.state==legacy.state && c.pause_ticks==legacy.pause_ticks);
++        CHECK(c.status==ACTV_REF_OK);
++        if(c.state==ACTV_PAUSE_1 || c.state==ACTV_PAUSE_2) CHECK(c.pos==legacy.pos);
+         CHECK(isfinite(c.pos));
+         CHECK(c.pos>=fminf(a,b)-1e-5f && c.pos<=fmaxf(a,b)+1e-5f);
+         if(prev==ACTV_PAUSE_1 || prev==ACTV_PAUSE_2) CHECK(c.pos==previous && c.vel==0);
+@@ -155,18 +160,53 @@
+     CHECK(c.pos==5 && c.status==ACTV_REF_INVALID);
+     actv_ref_tick(&c,5,10,30,0); CHECK(c.state==ACTV_MOVING_TO_2);
+     /* Motor2 changes cannot leak into Motor1's independent state or getters. */
+-    configure(0,-30,30,30,0); configure(1,-12,23,17,0);
+-    actv_ref_reset(&c,-30,0); actv_ref_reset(&frozen,-12,0);
++    configure(0,-30,30,30,0); configure(1,-15,25,17,0);
++    actv_ref_reset(&c,-30,0); actv_ref_reset(&frozen,-15,0);
+     new_tick(0,&c); new_tick(1,&frozen);
+-    CHECK(c.segment_to==30 && frozen.segment_to==23);
++    CHECK(c.segment_to==30 && frozen.segment_to==25);
+     CHECK(c.segment_ticks!=frozen.segment_ticks);
++}
++static void unavailable_timing(void) {
++    unsigned m,i;
++    for(m=0;m<2;++m) {
++        actv_rehab_t c={0}, saved, legacy={0};
++        float positions[4],velocities[4];
++        configure(m,-12,23,17,0.4f);
++        legacy.active=1; legacy.state=ACTV_MOVING_TO_2; legacy.pos=-12;
++        /* Verify the actual old functions repeat a complete four-step state,
++         * independently of the production cycle detector. */
++        for(i=0;i<268;++i) {
++            if(m) legacy_tick_m2(&legacy); else legacy_tick(&legacy);
++            if(i>=260 && i<264) {
++                positions[i-260]=legacy.pos; velocities[i-260]=legacy.vel;
++            }
++            if(i>=264) {
++                CHECK(legacy.pos==positions[i-264] && legacy.vel==velocities[i-264]);
++                CHECK(legacy.state==ACTV_MOVING_TO_2 && fabsf(legacy.pos-23)>0.01f);
++            }
++        }
++        actv_ref_reset(&c,-12,0.4f);
++        for(i=0;i<41;++i) new_tick(m,&c);
++        CHECK(c.status==ACTV_REF_LEGACY_CYCLE && c.state==ACTV_PAUSE_1);
++        CHECK(c.pos==-12 && c.vel==0 && c.segment_ticks==0);
++        saved=c;
++        for(i=0;i<1000;++i) new_tick(m,&c);
++        CHECK(memcmp(&c,&saved,sizeof(c))==0); /* failure stays cached */
++        configure(m,-12,-12,17,0.4f); new_tick(m,&c);
++        CHECK(c.status==ACTV_REF_OK && c.state==ACTV_MOVING_TO_2);
++        actv_ref_reset(&c,0,0); configure(m,0,1000,0,0); new_tick(m,&c);
++        CHECK(c.status==ACTV_REF_TIMING_LIMIT && c.pos==0 && c.segment_ticks==0);
++        saved=c; new_tick(m,&c); CHECK(memcmp(&c,&saved,sizeof(c))==0);
++    }
+ }
+ int main(void) {
+     FILE *csv=fopen("firmware-samples.csv","w"); CHECK(csv!=NULL);
+     fprintf(csv,"motor,tick,reference_deg,velocity_deg_per_tick,state\n");
+     trace_old_cycle(); durations(); duration_sweep(); math_test(); dynamic_and_invalid();
++    unavailable_timing();
+     cycle_test(0,-30,30,30,2,csv); cycle_test(1,-30,30,30,2,csv);
+-    cycle_test(0,-12,23,17,0.4f,csv); cycle_test(1,25,-15,17,0,csv);
++    cycle_test(0,-15,25,17,0.4f,csv); cycle_test(1,25,-15,17,0,csv);
++    cycle_test(1,0,0.005f,30,0.015f,csv);
+     cycle_test(0,5,5,30,0,csv);
+     fclose(csv);
+     printf("PASS %u checks; production C header + extracted production wrappers\n",checks);
+--- before/tests/active_reference/qt/test_telemetry.cpp
++++ after/tests/active_reference/qt/test_telemetry.cpp
+@@ -32,10 +32,11 @@
+     for(auto *box:window.rehabM2Ctx.checkboxes) box->setChecked(true);
+     for(auto *tabs:window.rehabPage->findChildren<QTabWidget*>()) tabs->setCurrentIndex(1);
+     actv_rehab_t m1={},m2={};
+-    actv_ref_reset(&m1,-30,2); actv_ref_reset(&m2,-12,0.4f);
++    actv_ref_reset(&m1,-30,2); actv_ref_reset(&m2,-15,0.4f);
+     for(int tick=1;tick<=1700;++tick) {
+         actv_ref_tick(&m1,-30,30,30,2);
+-        actv_ref_tick(&m2,-12,23,17,0.4f);
++        actv_ref_tick(&m2,-15,25,17,0.4f);
++        CHECK(m1.status==ACTV_REF_OK && m2.status==ACTV_REF_OK);
+         if(tick%5) continue;
+         // Synthetic feedback and control inputs are deliberately different from reference.
+         QMap<uint8_t,float> values={{0x01,3.0f},{0x02,-4.0f},{0x0B,m1.pos},
+--- before/tests/active_reference/run.ps1
++++ after/tests/active_reference/run.ps1
+@@ -20,12 +20,29 @@
+     Check-Exit 'Production reference C compilation'
+     & .\build\test_reference.exe | Tee-Object -FilePath results.txt
+     Check-Exit 'Reference tests'
++    # Host syntax checks only: these do not generate or link ARM firmware.
++    $firmwareRoot = (Resolve-Path ../..).Path
++    $syntaxArgs = @('-std=c99', '-fsyntax-only', '-DUSE_HAL_DRIVER', '-DSTM32F407xx')
++    foreach ($inc in @('Core/Inc', 'app', 'bsp', 'Drivers/STM32F4xx_HAL_Driver/Inc',
++                       'Drivers/STM32F4xx_HAL_Driver/Inc/Legacy',
++                       'Drivers/CMSIS/Device/ST/STM32F4xx/Include', 'Drivers/CMSIS/Include')) {
++        $syntaxArgs += "-I$firmwareRoot/$inc"
++    }
++    & "$CompilerRoot\gcc.exe" @syntaxArgs "$firmwareRoot/Core/Src/main.c" 2> firmware-syntax-current.txt
++    Check-Exit 'Current main.c host syntax check (not ARM build)'
++    & "$CompilerRoot\gcc.exe" @syntaxArgs -x c main.before.bin 2> firmware-syntax-original.txt
++    Check-Exit 'Legacy main.c host syntax check (not ARM build)'
+     & $CMake -S qt -B build/qt -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" "-DCMAKE_CXX_COMPILER=$CompilerRoot/g++.exe" "-DCMAKE_PREFIX_PATH=$QtRoot" -DCMAKE_BUILD_TYPE=Release
+     Check-Exit 'Qt test configuration'
+     & $CMake --build build/qt -j 4
+     Check-Exit 'Qt test build'
+     & .\build\qt\reference_telemetry_test.exe 2> qt-stderr.txt | Tee-Object -FilePath qt-results.txt
+     Check-Exit 'Offline telemetry integration test'
++    $hostSource = (Resolve-Path ../../../../03-HostApp/01_SerialConsole).Path
++    & $CMake -S $hostSource -B build/host -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" "-DCMAKE_CXX_COMPILER=$CompilerRoot/g++.exe" "-DCMAKE_PREFIX_PATH=$QtRoot" -DCMAKE_BUILD_TYPE=Release | Tee-Object -FilePath host-build.txt
++    Check-Exit 'Production Qt application configuration'
++    & $CMake --build build/host -j 4 | Tee-Object -FilePath host-build.txt -Append
++    Check-Exit 'Production Qt application build (not launched)'
+ } finally {
+     $env:PATH = $savedPath
+     $env:QT_QPA_PLATFORM = $savedPlatform

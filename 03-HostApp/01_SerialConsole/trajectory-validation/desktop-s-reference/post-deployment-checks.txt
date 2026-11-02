@@ -1,0 +1,3 @@
+PASS: desktop source and binary match the tested adjustable release.
+PASS: only mainwindow.cpp and mainwindow.h changed.
+PASS: runtime libraries and previous firmware files unchanged.

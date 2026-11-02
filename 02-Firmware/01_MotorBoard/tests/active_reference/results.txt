@@ -1,0 +1,32 @@
+M1 -30 -> 30 speed=30 old_ticks=223 new_ticks=223 status=0
+M1 -12 -> 23 speed=17 old_ticks=0 new_ticks=0 status=1
+M1 25 -> -15 speed=17 old_ticks=273 new_ticks=273 status=0
+M1 0 -> 45 speed=20 old_ticks=233 new_ticks=233 status=0
+M1 -60 -> 60 speed=15 old_ticks=0 new_ticks=0 status=1
+M1 5 -> 5 speed=30 old_ticks=1 new_ticks=1 status=0
+M1 0 -> 0.005 speed=30 old_ticks=1 new_ticks=1 status=0
+M1 -1 -> 1 speed=0 old_ticks=201 new_ticks=201 status=0
+M1 -1 -> 1 speed=-1 old_ticks=201 new_ticks=201 status=0
+M1 -20 -> 35 speed=100 old_ticks=84 new_ticks=84 status=0
+M1 -45 -> 45 speed=5 old_ticks=1801 new_ticks=1801 status=0
+M1 3 -> 7 speed=1.7 old_ticks=236 new_ticks=236 status=0
+M2 -30 -> 30 speed=30 old_ticks=223 new_ticks=223 status=0
+M2 -12 -> 23 speed=17 old_ticks=0 new_ticks=0 status=1
+M2 25 -> -15 speed=17 old_ticks=273 new_ticks=273 status=0
+M2 0 -> 45 speed=20 old_ticks=233 new_ticks=233 status=0
+M2 -60 -> 60 speed=15 old_ticks=0 new_ticks=0 status=1
+M2 5 -> 5 speed=30 old_ticks=1 new_ticks=1 status=0
+M2 0 -> 0.005 speed=30 old_ticks=1 new_ticks=1 status=0
+M2 -1 -> 1 speed=0 old_ticks=201 new_ticks=201 status=0
+M2 -1 -> 1 speed=-1 old_ticks=201 new_ticks=201 status=0
+M2 -20 -> 35 speed=100 old_ticks=84 new_ticks=84 status=0
+M2 -45 -> 45 speed=5 old_ticks=1801 new_ticks=1801 status=0
+M2 3 -> 7 speed=1.7 old_ticks=236 new_ticks=236 status=0
+Sweep: 184 legacy-convergent timings preserved; 8 proven cycles unavailable, no duration invented (both channels)
+M1 5 cycles: 4240 ticks, 42.40 nominal seconds; forward=223 backward=223 pause=200+1
+M2 5 cycles: 4240 ticks, 42.40 nominal seconds; forward=223 backward=223 pause=200+1
+M1 5 cycles: 3140 ticks, 31.40 nominal seconds; forward=273 backward=273 pause=40+1
+M2 5 cycles: 2740 ticks, 27.40 nominal seconds; forward=273 backward=273 pause=0+1
+M2 5 cycles: 30 ticks, 0.30 nominal seconds; forward=1 backward=1 pause=1+1
+M1 5 cycles: 20 ticks, 0.20 nominal seconds; forward=1 backward=1 pause=0+1
+PASS 274611 checks; production C header + extracted production wrappers

@@ -1,0 +1,50 @@
+{
+  "source": "C:\\Users\\Lenovo\\Desktop\\腕部驱动设备\\01_上位机程序",
+  "source_sha256": {
+    "CMakeLists.txt": "167b310fffdff00c41d6b6f279442cf9b6d098eb2b987e107fe6c098e3e5e1ff",
+    "main.cpp": "0c2c788713c94d76c5948d509074ed2261716280c0b75ff2df32a2936dcc9d5e",
+    "mainwindow.cpp": "2bdf750462fcd9e71bb39a6bca88e6a49c6f28d4d6d1d419456d592404239f2b",
+    "mainwindow.h": "c48cf40ef23a4e925cbf2a2287766b6f577aecb9365df4e7f0cc4d84f46cd0b3",
+    "mainwindow.ui": "74a4d73a40f1bfa344f72395a31f9e50584fad1de6f66745bf3b07fff2971908",
+    "protocolworker.cpp": "094693b6838635c57d69bff1646e299b96bb42cecafda60e7a49e029d585462a",
+    "protocolworker.h": "a1cb5af7382b259188eb42b0dab5eab0cc62e233e43671e9b249862e4c900e53",
+    "floatiddefs.h": "4b9d6453815e9b0bbafd03b0db0b9a8188d7e231b74d639dbe04f9bf80ed7408"
+  },
+  "firmware_sha256": {
+    "Core/Src/main.c": "562d73f16659a2ab725791bab57e575214d8170eb7174ea31825f2b939c02f3a",
+    "app/active_reference.h": "009d853966f0fd7e9ad36ef1cd2ff5021a5a1457b794c023f053e1acb7953fae",
+    "tests/active_reference/main.before.bin": "23dd1bfa6cb5211f6420b4acc0bafe21e44668ff63a4aa90ea565ab6181fd817",
+    "tests/active_reference/reference-only.patch": "0ec1069359fcd0f767fc94b3f3ac5efe67c02cde4e68a0286c3d3844cef2330f",
+    "tests/active_reference/strict-timing.patch": "3d778115784a965f591568e26d0ed3a47284c5925e34933b677c3c0819b9dd1f",
+    "tests/active_reference/REPORT.zh-CN.txt": "856bc614502b821d7460ff021fc4a5eb3d256c56220f7cdb3cb2170a092a38ed"
+  },
+  "desktop_exe": "C:\\Users\\Lenovo\\Desktop\\腕部驱动设备\\build\\Desktop_Qt_6_8_2_MinGW_64_bit_Release\\Uart_controller.exe",
+  "desktop_exe_sha256": "3392e0d39b9b01c43bced9aa47ba79f76fff7a6829aabf441758186bf86a43d2",
+  "runtime_sha256": {
+    "D3Dcompiler_47.dll": "e994847e01a6f1e4cbdc5a864616ac262f67ee4f14db194984661a8d927ab7f4",
+    "libgcc_s_seh-1.dll": "5e27589147caa6d7a30f4cc058a14c455dc62233901ffff9a1797ede425e9f86",
+    "libstdc++-6.dll": "8013488c5528bad7966ca07f3ea2e7a9b743cacb258fe76b46a326f821cc83b0",
+    "libwinpthread-1.dll": "c7c7dced65fff71c7bb61f80c771c562f533d26d72722d9d6091129a3b03d5ce",
+    "opengl32sw.dll": "b04de4541863bc7d8879040a78889c4849c1b1da2784c4630f734c146c2998ce",
+    "Qt6Charts.dll": "97a623aa1268f42cdd19c66831d6d98b6b1d04bd7eafa786e150e808613155a9",
+    "Qt6Core.dll": "5b1b474dc3fbc6853b24efce83337c867cefd9b70ee58ef3c83e85bceb3f8b94",
+    "Qt6Gui.dll": "f532e06633dc282c9f81b960569e2366bfc274dede4f925d0f0645062a6b9ef0",
+    "Qt6Network.dll": "ce0daecd065db34b732727a6aca5c366950950af97d1e0a959205f5e0482c704",
+    "Qt6OpenGL.dll": "b1f6c4e758a32ead7404e311b399ccf70baca6d5dad26339287d935f78931d08",
+    "Qt6OpenGLWidgets.dll": "66532266f5ce81f5bfe5b972ac7c17a98a43920bfff5a7d34c5235cc231320dd",
+    "Qt6SerialPort.dll": "7ba784de0fccab082d516ed6293c13664651b7a7c85e6d7472ef59d9f7c7605e",
+    "Qt6Svg.dll": "c6d2548c3f8e3dddee0ad0be81c90ff6e0a7153f48ee72c822596048d3d6dc21",
+    "Qt6Widgets.dll": "04c24bc97d447c0c0df74fe4790103f00f9e1caf28e30d4c423ecd0c5dc101ed",
+    "generic\\qtuiotouchplugin.dll": "50beb6307e50a513ef56bb29918a309f379e7335f04ce98ed2cf2aa0e00785bc",
+    "iconengines\\qsvgicon.dll": "8167fff8bd22bd35ce0b31a041343008efb736c4559765064f62380651441d97",
+    "imageformats\\qgif.dll": "77118952dffeaf56fd5eb659820f363de680197773d9aff44e981615f1364393",
+    "imageformats\\qico.dll": "7463aa163f08f1813dece153f3ba371fd14b7433d2b52bfe3d5fddada6c4f233",
+    "imageformats\\qjpeg.dll": "fee1e72f8a2c7c7469365f21a8e89734894622babfa5287f0c914882525317e3",
+    "imageformats\\qsvg.dll": "2d51869aa1c88651d9b7fce7ded75ba7af15cacc68b8d87d93d79d76dcdb031a",
+    "networkinformation\\qnetworklistmanager.dll": "09d9ae6d178a7ba53470ba5a86a1d441bb0d09387869aac16a351c490ee4e137",
+    "platforms\\qwindows.dll": "fd91be3881fe0da1d80d65b5b59a08b226e19ea95b409ace19dd3971d753e947",
+    "styles\\qmodernwindowsstyle.dll": "4cbae437b5cd09fdb1586c69781b97c13bd5da279a59f1802b54a74b87181b38",
+    "tls\\qcertonlybackend.dll": "8f10e24c584fe02848c504248689c3e1787fb575240d4818de7f4d81880b0432",
+    "tls\\qschannelbackend.dll": "a48e141998a69bf250c513618874c5d0e1838b72f15d0a28efd2dda314b90499"
+  }
+}

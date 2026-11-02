@@ -1,0 +1,160 @@
+--- before/01_上位机程序/mainwindow.h
++++ after/01_上位机程序/mainwindow.h
+@@ -9,6 +9,7 @@
+ #include <QPushButton>
+ #include <QSerialPort>
+ #include <QSpinBox>
++#include <QDoubleSpinBox>
+ #include <QStackedWidget>
+ #include <QTableWidget>
+ #include <QTextEdit>
+@@ -216,7 +217,7 @@
+         // 参考轨迹参数（从现有「主动」选项卡输入框读取，只读不进下发）
+         float limit1 = -30.0f;
+         float limit2 = 30.0f;
+-        float speed = 30.0f;    // °/s
++        qreal moveSeconds = 6.0; // Local reference only; one-way duration
+         float pause = 2.0f;     // s
+         int cycles = 5;
+ 
+@@ -247,6 +248,8 @@
+     TrackerCtx trackerM1;
+     TrackerCtx trackerM2;
+     QSpinBox *trackerCyclesSpin = nullptr;
++    QDoubleSpinBox *trackerM1MoveSpin = nullptr;
++    QDoubleSpinBox *trackerM2MoveSpin = nullptr;
+     QPushButton *trackerStartBtn = nullptr;
+     QLabel *trackerStateLabel = nullptr;
+     QTimer *mTrackerTimer = nullptr;
+--- before/01_上位机程序/mainwindow.cpp
++++ after/01_上位机程序/mainwindow.cpp
+@@ -1866,7 +1866,7 @@
+ 
+     auto *trackerCtrlRow = new QHBoxLayout;
+     auto *trackerHint = new QLabel(
+-        QStringLiteral("参考轨迹参数取自各电机「主动」选项卡：T波速度 / 极限角1 / 极限角2 / 停顿时间"),
++        QStringLiteral("角度与停顿取自「主动」选项卡；本地参考速度由下方单程时间单独设置"),
+         trackerBox);
+     trackerHint->setStyleSheet(QStringLiteral("QLabel { font-size: 10px; color: #777; }"));
+     trackerCtrlRow->addWidget(trackerHint, 1);
+@@ -1890,6 +1890,34 @@
+     trackerCtrlRow->addWidget(trackerStateLabel);
+     trackerLay->addLayout(trackerCtrlRow);
+ 
++    auto *durationRow = new QHBoxLayout;
++    durationRow->addWidget(new QLabel(QStringLiteral("Motor1 单程时间:"), trackerBox));
++    auto makeDurationSpin = [this, trackerBox]() {
++        auto *spin = new QDoubleSpinBox(trackerBox);
++        spin->setRange(1.0, 120.0);
++        spin->setDecimals(1);
++        spin->setSingleStep(0.5);
++        spin->setSuffix(QStringLiteral(" 秒"));
++        spin->setValue(6.0);
++        spin->setFixedWidth(104);
++        spin->setToolTip(QStringLiteral("数值越大越慢，仅改变本地参考；运行中修改将在重新开始时生效，不向设备发送参数。"));
++        connect(spin, &QDoubleSpinBox::valueChanged, this, [this](double) {
++            if (!trackerM1.running && !trackerM2.running
++                && !trackerM1.finished && !trackerM2.finished) applyReference(false);
++        });
++        return spin;
++    };
++    trackerM1MoveSpin = makeDurationSpin();
++    durationRow->addWidget(trackerM1MoveSpin);
++    durationRow->addSpacing(16);
++    durationRow->addWidget(new QLabel(QStringLiteral("Motor2 单程时间:"), trackerBox));
++    trackerM2MoveSpin = makeDurationSpin();
++    durationRow->addWidget(trackerM2MoveSpin);
++    auto *durationHint = new QLabel(QStringLiteral("时间越长越慢；运行中锁定本轮设置，修改在重新开始时生效"), trackerBox);
++    durationHint->setStyleSheet(QStringLiteral("QLabel { font-size: 10px; color: #777; }"));
++    durationRow->addWidget(durationHint, 1);
++    trackerLay->addLayout(durationRow);
++
+     auto *trackerChartRow = new QHBoxLayout;
+     trackerChartRow->setSpacing(8);
+ 
+@@ -1964,12 +1992,17 @@
+     // ── 轨迹跟踪：信号连接与刷新定时器 ──────────────
+     connect(trackerStartBtn, &QPushButton::clicked, this, &MainWindow::startExperiment);
+     connect(trackerPreviewBtn, &QPushButton::clicked, this, [this]() {
++        if (trackerM1.running || trackerM2.running || trackerM1.finished || trackerM2.finished) {
++            appendTreatLog(QStringLiteral("本轮参考设置已锁定；点击『重新开始』应用修改（未下发指令）"));
++            return;
++        }
+         applyReference(false);
+         appendTreatLog(QStringLiteral("参考轨迹预览已刷新（未下发指令）"));
+     });
+     connect(trackerCyclesSpin, &QSpinBox::valueChanged, this, [this](int) {
+         // 未运行时改周期数会自动刷新预览；运行中不允许改变本次实验的参考轨迹
+-        if (!trackerM1.running && !trackerM2.running) applyReference(false);
++        if (!trackerM1.running && !trackerM2.running
++            && !trackerM1.finished && !trackerM2.finished) applyReference(false);
+     });
+ 
+     mTrackerTimer = new QTimer(this);
+@@ -2329,19 +2362,19 @@
+     return traj.last().y();
+ }
+ 
+-// Local S reference: retain the original hold/ramp boundaries and total time.
+-// Only the ramp positions change; experiment clocks and telemetry are unchanged.
+-static QList<QPointF> makeRefTrajectory(float l1, float l2, float speed, float pause,
++// Local S reference: independently configured one-way duration per motor.
++// Existing experiment clocks, feedback and device commands remain independent.
++static QList<QPointF> makeRefTrajectory(float l1, float l2, qreal moveSeconds, float pause,
+                                         int cycles, qreal *totalT)
+ {
+     if (!qIsFinite(l1)) l1 = -30.0f;
+     if (!qIsFinite(l2)) l2 = 30.0f;
+-    if (!qIsFinite(speed) || speed <= 0.01f) speed = 30.0f;
++    if (!qIsFinite(moveSeconds) || moveSeconds <= 0.0) moveSeconds = 6.0;
+     if (!qIsFinite(pause) || pause < 0.0f) pause = 0.0f;
+     cycles = qBound(1, cycles, 20);
+ 
+     const qreal hold = static_cast<qreal>(pause);
+-    const qreal ramp = qAbs(static_cast<qreal>(l2) - static_cast<qreal>(l1)) / static_cast<qreal>(speed);
++    const qreal ramp = moveSeconds;
+     qreal t = 0.0;
+ 
+     QList<QPointF> pts;
+@@ -2360,7 +2393,7 @@
+                 pts.append(QPointF(t + ramp*u, angle));
+             }
+         }
+-        // Exact endpoint and the same time addition as the previous trapezoid.
++        // Exact endpoint at the configured one-way duration.
+         t = end;
+         pts.append(QPointF(t, to));
+     };
+@@ -2405,11 +2438,12 @@
+         return ok ? v : def;
+     };
+     // 顺序与「主动」选项卡一致：T波速度 / 极限角1 / 极限角2 / 停顿时间
+-    ctx.speed  = rd(e[0], 30.0f);
++    QDoubleSpinBox *duration = ctx.targetId == 0x01 ? trackerM1MoveSpin : trackerM2MoveSpin;
++    ctx.moveSeconds = duration ? duration->value() : 6.0;
+     ctx.limit1 = rd(e[1], -30.0f);
+     ctx.limit2 = rd(e[2], 30.0f);
+     ctx.pause  = rd(e[3], 2.0f);
+-    if (!qIsFinite(ctx.speed) || ctx.speed <= 0.01f) ctx.speed = 30.0f;
++    if (!qIsFinite(ctx.moveSeconds) || ctx.moveSeconds <= 0.0) ctx.moveSeconds = 6.0;
+     if (!qIsFinite(ctx.pause) || ctx.pause < 0.0f) ctx.pause = 0.0f;
+     if (!qIsFinite(ctx.limit1)) ctx.limit1 = -30.0f;
+     if (!qIsFinite(ctx.limit2)) ctx.limit2 = 30.0f;
+@@ -2516,12 +2550,16 @@
+ // 重算参考轨迹与坐标轴范围；resetState=true 时同时复位实验状态（用于「开始实验/重新开始」）
+ void MainWindow::applyReference(bool resetState)
+ {
++    // Freeze both channels for this experiment, including when only one is still
++    // running or both have finished. Only an explicit restart loads pending UI values.
++    if (!resetState && (trackerM1.running || trackerM2.running
++                        || trackerM1.finished || trackerM2.finished)) return;
+     const int cycles = trackerCyclesSpin ? trackerCyclesSpin->value() : 5;
+     for (TrackerCtx *c : {&trackerM1, &trackerM2}) {
+         loadTrackerParams(*c);
+         c->cycles = cycles;
+         qreal T = 0.0;
+-        c->refTraj = makeRefTrajectory(c->limit1, c->limit2, c->speed, c->pause, cycles, &T);
++        c->refTraj = makeRefTrajectory(c->limit1, c->limit2, c->moveSeconds, c->pause, cycles, &T);
+         c->totalT = T;
+ 
+         if (c->refSeries) {

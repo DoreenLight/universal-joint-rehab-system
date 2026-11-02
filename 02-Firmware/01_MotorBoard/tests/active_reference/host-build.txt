@@ -1,0 +1,23 @@
+-- The CXX compiler identification is GNU 13.1.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Qt/Tools/mingw1310_64/bin/g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test HAVE_STDATOMIC
+-- Performing Test HAVE_STDATOMIC - Success
+-- Found WrapAtomic: TRUE
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (5.4s)
+-- Generating done (0.3s)
+-- Build files have been written to: C:/Users/Lenovo/Desktop/universal-joint-rehab-system/02-Firmware/01_MotorBoard/tests/active_reference/build/host
+[1/6] Automatic MOC and UIC for target Uart_controller
+[2/6] Building CXX object CMakeFiles/Uart_controller.dir/main.cpp.obj
+[3/6] Building CXX object CMakeFiles/Uart_controller.dir/protocolworker.cpp.obj
+[4/6] Building CXX object CMakeFiles/Uart_controller.dir/Uart_controller_autogen/mocs_compilation.cpp.obj
+[5/6] Building CXX object CMakeFiles/Uart_controller.dir/mainwindow.cpp.obj
+[6/6] Linking CXX executable Uart_controller.exe

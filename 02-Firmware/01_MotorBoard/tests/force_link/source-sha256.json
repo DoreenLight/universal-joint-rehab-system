@@ -1,0 +1,6 @@
+{
+  "02-Firmware\\01_MotorBoard\\Core\\Src\\usart.c": "362af8718c2de78a1113e2abb946f83011281af465fceb9d524a906d455f4918",
+  "02-Firmware\\02_MiddleBoard\\Driver\\USART\\usart3.c": "0bd8ec8a0846e14fdd8072180d9da1d613f6e9a49276e251bb5f3a730def65c7",
+  "02-Firmware\\02_MiddleBoard\\Driver\\USART\\usart1.c": "d128de110ead2fcd831d894574c53d6be715ba7410f254e00d2b7df757442de1",
+  "02-Firmware\\02_MiddleBoard\\Driver\\USART\\usart3.h": "5a543fc35dfdb6d7a6642d2cb307069873258391de5ee13b28b4038f116b37d9"
+}

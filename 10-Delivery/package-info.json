@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-26",
+  "created_utc": "2026-10-26T02:13:18.639708+00:00",
+  "file_count": 6592,
+  "uncompressed_file_bytes": 1763671715,
+  "project_snapshot": "Project",
+  "desktop_snapshot": "DesktopHost",
+  "desktop_executable_sha256": "0d1109c3a1003c40bc0da1a432ef1eba3b976525ca7dd8ca4eeda2321adae906",
+  "default_single_leg_seconds": {
+    "Motor1": 6,
+    "Motor2": 6
+  },
+  "default_endpoint_hold_seconds": 2,
+  "default_cycles": 5,
+  "default_total_seconds": 80,
+  "exclusions": [
+    {
+      "path": "Project/.claude",
+      "reason": "local version-control or AI metadata"
+    },
+    {
+      "path": "Project/10-Delivery",
+      "reason": "package output; prevent self inclusion"
+    },
+    {
+      "path": "Project/02-Firmware/01_MotorBoard/.git",
+      "reason": "local version-control or AI metadata"
+    },
+    {
+      "path": "Project/03-HostApp/01_SerialConsole/.git",
+      "reason": "local version-control or AI metadata"
+    },
+    {
+      "path": "DesktopHost/.git",
+      "reason": "local version-control or AI metadata"
+    },
+    {
+      "path": "DesktopHost/build/source",
+      "reason": "directory link; canonical source already included"
+    }
+  ],
+  "package_only_change": "DesktopHost/build/Desktop_Qt_6_8_2_MinGW_64_bit_Release/qt.conf: locate bundled Qt plugins",
+  "flashed": false
+}

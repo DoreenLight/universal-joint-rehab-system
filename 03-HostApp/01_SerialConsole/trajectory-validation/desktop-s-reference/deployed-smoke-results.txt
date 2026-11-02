@@ -1,0 +1,1 @@
+PASS: updated desktop executable stayed alive for 2 seconds; smoke instance closed; path=C:\Users\Lenovo\Desktop\腕部驱动设备\build\Desktop_Qt_6_8_2_MinGW_64_bit_Release\Uart_controller.exe

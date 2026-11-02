@@ -1,0 +1,25 @@
+﻿原目录结构版打包验证
+日期：2026-10-26
+分享包：腕关节康复项目_原目录结构分享包_20261026.zip
+大小：1231487110字节，约1.23GB。
+
+解压后结构：
+universal-joint-rehab-system/
+  01-CANAnalyzer/
+  02-Firmware/
+  03-HostApp/
+  09-Archive/
+  README.md、原历史压缩包及其他原文件
+  腕部驱动设备/（实际桌面上位机，使用原名，内部结构保留）
+  双击启动上位机.cmd
+  创建桌面快捷方式.cmd
+  create_desktop_shortcut.ps1
+  开始使用.txt、PACKAGE_INFO.json、PACKAGE_MANIFEST.jsonl
+
+已逐项确认6584个原项目/桌面上位机文件的原相对路径与内容得到保留；没有Project、DesktopHost、WristRehab等额外归类层。
+6592个打包文件通过完整ZIP CRC与SHA256校验。
+相对路径启动入口、收件人快捷方式创建工具、含中文和空格的新目录启动检查均通过。
+Qt库与Windows插件从随包运行目录加载，验证时PATH只包含Windows系统目录。
+临时启动进程已关闭；没有连接或烧录设备。
+原目录未移动、未重命名；旧分享包保留，可明确选择本原目录结构版发送。
+排除范围与前版相同：Git元数据、本机AI设置、交付输出目录及目录联接，详见包内清单。

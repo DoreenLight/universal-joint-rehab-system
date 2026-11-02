@@ -1,0 +1,1 @@
+PASS 6127 checks; 340 generated telemetry frames; original parser/recording/charts; zero sends; no open ports
